@@ -59,14 +59,25 @@ export class ManifestComparison {
       ssaiManifest
     );
 
+    // Add semantic validation results
+    const semanticValidation = this.processSemanticValidation(
+      sourceManifest,
+      ssaiManifest
+    );
+
     // Combine results with deduplication
     return this.combineValidationResults(
       enhancedComparison,
-      comprehensiveValidation
+      comprehensiveValidation,
+      semanticValidation
     );
   }
 
-  async combineValidationResults(enhancedResults, comprehensivePromise) {
+  async combineValidationResults(
+    enhancedResults,
+    comprehensivePromise,
+    semanticResults = []
+  ) {
     try {
       const comprehensiveResults = await comprehensivePromise;
 
@@ -101,13 +112,21 @@ export class ManifestComparison {
         }
       });
 
+      // Add semantic validation results
+      semanticResults.forEach((semanticResult) => {
+        const key = this.generateIssueKey(semanticResult);
+        if (!issueMap.has(key)) {
+          issueMap.set(key, semanticResult);
+        }
+      });
+
       return Array.from(issueMap.values());
     } catch (error) {
       console.warn(
         "Comprehensive validation failed, using enhanced comparison only:",
         error
       );
-      return enhancedResults;
+      return [...enhancedResults, ...semanticResults];
     }
   }
 
@@ -2649,5 +2668,176 @@ export class ManifestComparison {
     }
 
     return false;
+  }
+
+  // Process semantic validation results from ManifestService
+  processSemanticValidation(sourceManifest, ssaiManifest) {
+    const differences = [];
+
+    try {
+      // Parse manifests to get validation data
+      const sourceMPD = this.parseManifestToObject(sourceManifest);
+      const ssaiMPD = this.parseManifestToObject(ssaiManifest);
+
+      // Process source validation results
+      if (sourceMPD._validation) {
+        this.processValidationResults(
+          sourceMPD._validation,
+          "SOURCE",
+          differences
+        );
+      }
+
+      // Process SSAI validation results
+      if (ssaiMPD._validation) {
+        this.processValidationResults(ssaiMPD._validation, "SSAI", differences);
+      }
+
+      // Compare interdependencies between source and SSAI
+      if (sourceMPD._validation && ssaiMPD._validation) {
+        this.compareInterdependencies(
+          sourceMPD._validation.interdependencies,
+          ssaiMPD._validation.interdependencies,
+          differences
+        );
+      }
+    } catch (error) {
+      console.warn("Semantic validation processing failed:", error);
+    }
+
+    return differences;
+  }
+
+  // Process validation results from ManifestService
+  processValidationResults(validation, manifestType, differences) {
+    // Process errors
+    validation.errors.forEach((error) => {
+      differences.push({
+        type: error.type || "SEMANTIC_ERROR",
+        tag: `${manifestType} Validation`,
+        attribute: error.attribute || "",
+        sourceValue: manifestType === "SOURCE" ? "Error" : "",
+        ssaiValue: manifestType === "SSAI" ? "Error" : "",
+        solution: this.generateSemanticSolution(error),
+        severity: error.severity || "HIGH",
+        message: `${manifestType}: ${error.message}`,
+        manifestType,
+      });
+    });
+
+    // Process warnings
+    validation.warnings.forEach((warning) => {
+      differences.push({
+        type: warning.type || "SEMANTIC_WARNING",
+        tag: `${manifestType} Validation`,
+        attribute: warning.attribute || "",
+        sourceValue: manifestType === "SOURCE" ? "Warning" : "",
+        ssaiValue: manifestType === "SSAI" ? "Warning" : "",
+        solution: this.generateSemanticSolution(warning),
+        severity: warning.severity || "MEDIUM",
+        message: `${manifestType}: ${warning.message}`,
+        manifestType,
+      });
+    });
+  }
+
+  // Compare interdependencies between source and SSAI
+  compareInterdependencies(sourceInterdep, ssaiInterdep, differences) {
+    // Compare period continuity
+    if (sourceInterdep.periodContinuity && ssaiInterdep.periodContinuity) {
+      const srcContinuity = sourceInterdep.periodContinuity;
+      const ssaiContinuity = ssaiInterdep.periodContinuity;
+
+      if (srcContinuity.continuityGaps !== ssaiContinuity.continuityGaps) {
+        differences.push({
+          type: "PERIOD_CONTINUITY_CHANGE",
+          tag: "Interdependency",
+          attribute: "continuityGaps",
+          sourceValue: srcContinuity.continuityGaps.toString(),
+          ssaiValue: ssaiContinuity.continuityGaps.toString(),
+          solution:
+            "Review period continuity changes introduced by SSAI processing",
+          severity:
+            ssaiContinuity.continuityGaps > srcContinuity.continuityGaps
+              ? "HIGH"
+              : "MEDIUM",
+          message: "Period continuity gaps changed during SSAI processing",
+        });
+      }
+    }
+
+    // Compare timing interdependencies
+    if (sourceInterdep.timing && ssaiInterdep.timing) {
+      const srcTiming = sourceInterdep.timing;
+      const ssaiTiming = ssaiInterdep.timing;
+
+      // Check if buffer time relationships changed
+      if (srcTiming.minBufferTime && ssaiTiming.minBufferTime) {
+        const bufferChange = Math.abs(
+          srcTiming.minBufferTime - ssaiTiming.minBufferTime
+        );
+        if (bufferChange > 0.1) {
+          differences.push({
+            type: "BUFFER_TIME_INTERDEPENDENCY_CHANGE",
+            tag: "Interdependency",
+            attribute: "minBufferTime",
+            sourceValue: `${srcTiming.minBufferTime.toFixed(3)}s`,
+            ssaiValue: `${ssaiTiming.minBufferTime.toFixed(3)}s`,
+            solution:
+              "Verify buffer time changes are intentional for SSAI ad transitions",
+            severity:
+              ssaiTiming.minBufferTime < srcTiming.minBufferTime
+                ? "HIGH"
+                : "MEDIUM",
+            message:
+              "Buffer time interdependency changed during SSAI processing",
+          });
+        }
+      }
+    }
+
+    // Compare BaseURL interdependencies
+    if (sourceInterdep.baseUrls && ssaiInterdep.baseUrls) {
+      const srcBaseUrls = sourceInterdep.baseUrls.length;
+      const ssaiBaseUrls = ssaiInterdep.baseUrls.length;
+
+      if (srcBaseUrls !== ssaiBaseUrls) {
+        differences.push({
+          type: "BASEURL_COUNT_CHANGE",
+          tag: "Interdependency",
+          attribute: "baseUrlCount",
+          sourceValue: srcBaseUrls.toString(),
+          ssaiValue: ssaiBaseUrls.toString(),
+          solution:
+            "Review BaseURL changes - may affect segment URL resolution",
+          severity: "MEDIUM",
+          message: "Number of BaseURLs changed during SSAI processing",
+        });
+      }
+    }
+  }
+
+  // Generate solutions for semantic validation issues
+  generateSemanticSolution(issue) {
+    const type = issue.type?.toLowerCase() || "";
+    const message = issue.message?.toLowerCase() || "";
+
+    if (type.includes("period_continuity")) {
+      return "Ensure period start times and durations create a continuous timeline without gaps or overlaps";
+    } else if (type.includes("buffer_time_conflict")) {
+      return "Adjust buffer time relationships - suggestedPresentationDelay should be >= minBufferTime";
+    } else if (type.includes("live_timing_conflict")) {
+      return "For live streams, timeShiftBufferDepth should be at least 2x minimumUpdatePeriod";
+    } else if (type.includes("baseurl_conflict")) {
+      return "Remove duplicate BaseURLs or ensure they serve different purposes at different hierarchy levels";
+    } else if (type.includes("missing_live_attribute")) {
+      return "Add required live streaming attributes for proper dynamic MPD functionality";
+    } else if (message.includes("duration mismatch")) {
+      return "Verify that sum of period durations matches MPD mediaPresentationDuration";
+    } else if (message.includes("semantic validation")) {
+      return "Check manifest structure and fix any malformed elements or attributes";
+    }
+
+    return issue.solution || "Review and fix the identified semantic issue";
   }
 }

@@ -1,7 +1,7 @@
-import { ref } from 'vue';
-import { DashPlayerService } from '../services/dashPlayerService.js';
-import { ManifestService } from '../services/manifestService.js';
-import { ManifestComparison } from '../services/manifestComparison.js';
+import { ref } from "vue";
+import { DashPlayerService } from "../services/dashPlayerService.js";
+import { ManifestService } from "../services/manifestService.js";
+import { ManifestComparison } from "../services/manifestComparison.js";
 
 export function useDashPlayer() {
   // Services (create once)
@@ -10,14 +10,14 @@ export function useDashPlayer() {
   const manifestComparison = new ManifestComparison();
 
   // Reactive state
-  const sourceUrl = ref('');
-  const ssaiUrl = ref('');
+  const sourceUrl = ref("");
+  const ssaiUrl = ref("");
   const sourceManifest = ref(null);
   const ssaiManifest = ref(null);
   const sourceMpdInfo = ref({});
   const ssaiMpdInfo = ref({});
   const comparison = ref([]);
-  const viewMode = ref('manifest');
+  const viewMode = ref("manifest");
 
   // Segment state
   const sourceSegments = ref([]);
@@ -31,13 +31,13 @@ export function useDashPlayer() {
 
   // Methods
   const loadManifest = async (type) => {
-    const url = type === 'source' ? sourceUrl.value : ssaiUrl.value;
-    
+    const url = type === "source" ? sourceUrl.value : ssaiUrl.value;
+
     try {
       const xml = await manifestService.loadManifest(url);
       const mpdInfo = manifestService.extractMpdInfo(xml);
 
-      if (type === 'source') {
+      if (type === "source") {
         sourceManifest.value = xml;
         sourceMpdInfo.value = mpdInfo;
       } else {
@@ -52,11 +52,20 @@ export function useDashPlayer() {
   };
 
   const playStream = (type, videoElement) => {
-    const url = type === 'source' ? sourceUrl.value : ssaiUrl.value;
-    const manifest = type === 'source' ? sourceManifest.value : ssaiManifest.value;
+    const url = type === "source" ? sourceUrl.value : ssaiUrl.value;
+    const manifest =
+      type === "source" ? sourceManifest.value : ssaiManifest.value;
 
     if (!url || !videoElement || !manifest) {
-      alert(`Cannot play ${type}: ${!url ? 'No URL' : !videoElement ? 'No video element' : 'No manifest loaded'}`);
+      alert(
+        `Cannot play ${type}: ${
+          !url
+            ? "No URL"
+            : !videoElement
+            ? "No video element"
+            : "No manifest loaded"
+        }`
+      );
       return;
     }
 
@@ -64,7 +73,7 @@ export function useDashPlayer() {
     videoElement.muted = true;
 
     // Reset segments
-    if (type === 'source') {
+    if (type === "source") {
       sourceSegmentsLoading.value = true;
       sourceSegments.value = [];
     } else {
@@ -74,10 +83,12 @@ export function useDashPlayer() {
 
     const onSegmentLoaded = (segment) => {
       if (segment.error) {
-        alert(`Error loading segment: ${segment.url}\nStatus: ${segment.status}\n${segment.error}`);
+        alert(
+          `Error loading segment: ${segment.url}\nStatus: ${segment.status}\n${segment.error}`
+        );
       }
 
-      if (type === 'source') {
+      if (type === "source") {
         sourceSegments.value.push(segment);
         sourceSegmentsLoading.value = false;
       } else {
@@ -88,13 +99,19 @@ export function useDashPlayer() {
 
     const onError = (errorMessage) => {
       alert(errorMessage);
-      if (type === 'source') sourceSegmentsLoading.value = false;
+      if (type === "source") sourceSegmentsLoading.value = false;
       else ssaiSegmentsLoading.value = false;
     };
 
-    const player = dashPlayerService.createPlayer(type, videoElement, url, onSegmentLoaded, onError);
-    
-    if (type === 'source') {
+    const player = dashPlayerService.createPlayer(
+      type,
+      videoElement,
+      url,
+      onSegmentLoaded,
+      onError
+    );
+
+    if (type === "source") {
       sourcePlayer.value = player;
     } else {
       ssaiPlayer.value = player;
@@ -103,8 +120,8 @@ export function useDashPlayer() {
 
   const stopStream = (type) => {
     dashPlayerService.stopPlayer(type);
-    
-    if (type === 'source') {
+
+    if (type === "source") {
       sourceSegments.value = [];
       sourceSegmentsLoading.value = false;
       sourcePlayer.value = null;
@@ -116,7 +133,7 @@ export function useDashPlayer() {
   };
 
   const clearSegments = (type) => {
-    if (type === 'source') {
+    if (type === "source") {
       sourceSegments.value = [];
       sourceSegmentsLoading.value = false;
     } else {
@@ -134,7 +151,7 @@ export function useDashPlayer() {
 
   const compareManifests = async () => {
     const differences = await manifestComparison.compareManifests(
-      sourceManifest.value, 
+      sourceManifest.value,
       ssaiManifest.value
     );
     comparison.value = differences;
@@ -167,6 +184,6 @@ export function useDashPlayer() {
     stopStream,
     clearSegments,
     clearAllSegments,
-    formatManifest
+    formatManifest,
   };
 }
