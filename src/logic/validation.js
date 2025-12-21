@@ -3,7 +3,7 @@ const SSAIMPDValidator = {
     const errors = [];
     const warnings = [];
     const durationErrors = []; // Collect duration parsing errors
-    
+
     const rules = {
       type: {
         severity: "VERY_HIGH",
@@ -16,13 +16,13 @@ const SSAIMPDValidator = {
           if (!sourceMPD.mediaPresentationDuration) return true;
           const sourceDurationResult = this.parseDuration(
             sourceMPD.mediaPresentationDuration,
-            'source mediaPresentationDuration'
+            "source mediaPresentationDuration"
           );
           const ssaiDurationResult = this.parseDuration(
             ssaiMPD.mediaPresentationDuration,
-            'SSAI mediaPresentationDuration'
+            "SSAI mediaPresentationDuration"
           );
-          
+
           // Collect duration parsing errors
           if (sourceDurationResult.error) {
             durationErrors.push(sourceDurationResult.error);
@@ -30,8 +30,12 @@ const SSAIMPDValidator = {
           if (ssaiDurationResult.error) {
             durationErrors.push(ssaiDurationResult.error);
           }
-          
-          if (sourceDurationResult.value === null || ssaiDurationResult.value === null) return true;
+
+          if (
+            sourceDurationResult.value === null ||
+            ssaiDurationResult.value === null
+          )
+            return true;
           return ssaiDurationResult.value >= sourceDurationResult.value;
         },
         message: "SSAI duration cannot be shorter than source",
@@ -64,9 +68,15 @@ const SSAIMPDValidator = {
       minBufferTime: {
         severity: "HIGH",
         validate: () => {
-          const srcBufferResult = this.parseDuration(sourceMPD.minBufferTime, 'source minBufferTime');
-          const ssaiBufferResult = this.parseDuration(ssaiMPD.minBufferTime, 'SSAI minBufferTime');
-          
+          const srcBufferResult = this.parseDuration(
+            sourceMPD.minBufferTime,
+            "source minBufferTime"
+          );
+          const ssaiBufferResult = this.parseDuration(
+            ssaiMPD.minBufferTime,
+            "SSAI minBufferTime"
+          );
+
           // Collect duration parsing errors
           if (srcBufferResult.error) {
             durationErrors.push(srcBufferResult.error);
@@ -74,8 +84,9 @@ const SSAIMPDValidator = {
           if (ssaiBufferResult.error) {
             durationErrors.push(ssaiBufferResult.error);
           }
-          
-          if (srcBufferResult.value === null || ssaiBufferResult.value === null) return true;
+
+          if (srcBufferResult.value === null || ssaiBufferResult.value === null)
+            return true;
           return ssaiBufferResult.value >= srcBufferResult.value;
         },
         message: "SSAI minBufferTime should not be less than source",
@@ -103,9 +114,15 @@ const SSAIMPDValidator = {
         severity: "HIGH",
         validate: () => {
           if (!sourceMPD.timeShiftBufferDepth) return true;
-          const srcDepthResult = this.parseDuration(sourceMPD.timeShiftBufferDepth, 'source timeShiftBufferDepth');
-          const ssaiDepthResult = this.parseDuration(ssaiMPD.timeShiftBufferDepth, 'SSAI timeShiftBufferDepth');
-          
+          const srcDepthResult = this.parseDuration(
+            sourceMPD.timeShiftBufferDepth,
+            "source timeShiftBufferDepth"
+          );
+          const ssaiDepthResult = this.parseDuration(
+            ssaiMPD.timeShiftBufferDepth,
+            "SSAI timeShiftBufferDepth"
+          );
+
           // Collect duration parsing errors
           if (srcDepthResult.error) {
             durationErrors.push(srcDepthResult.error);
@@ -113,8 +130,9 @@ const SSAIMPDValidator = {
           if (ssaiDepthResult.error) {
             durationErrors.push(ssaiDepthResult.error);
           }
-          
-          if (srcDepthResult.value === null || ssaiDepthResult.value === null) return true;
+
+          if (srcDepthResult.value === null || ssaiDepthResult.value === null)
+            return true;
           return ssaiDepthResult.value >= srcDepthResult.value * 0.9;
         },
         message: "timeShiftBufferDepth significantly reduced",
@@ -130,7 +148,7 @@ const SSAIMPDValidator = {
         message: "suggestedPresentationDelay missing for live stream",
       },
     };
-    
+
     errors.push(...this.executeValidationRules(rules));
     errors.push(...durationErrors); // Add duration parsing errors
     return { errors, warnings };
@@ -292,6 +310,15 @@ const SSAIMPDValidator = {
       : ssaiPeriods
       ? [ssaiPeriods]
       : [];
+
+    // Enhanced Period-level validation
+    const periodValidation = this.validatePeriodStructure(
+      sourceArray,
+      ssaiArray
+    );
+    errors.push(...periodValidation.errors);
+    warnings.push(...periodValidation.warnings);
+
     const sourceTimeline = this.buildTimeline(sourceArray);
     const ssaiTimeline = this.buildTimeline(ssaiArray);
     const timelineErrors = this.validateTimelineContinuity(ssaiTimeline);
@@ -329,6 +356,153 @@ const SSAIMPDValidator = {
         .toFixed(2),
     });
     return { errors, warnings, info: { adPeriods: adPeriods.length } };
+  },
+
+  validatePeriodStructure(sourcePeriods, ssaiPeriods) {
+    const errors = [];
+    const warnings = [];
+
+    // Period count validation
+    if (sourcePeriods.length > ssaiPeriods.length) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: "Missing periods in SSAI manifest",
+        expected: sourcePeriods.length,
+        actual: ssaiPeriods.length,
+        impact: "Content periods may be missing, causing playback gaps",
+      });
+    }
+
+    // Validate each source period exists in SSAI
+    sourcePeriods.forEach((sourcePeriod, index) => {
+      if (!sourcePeriod) return;
+
+      // Period ID validation
+      if (sourcePeriod.id) {
+        const ssaiPeriodWithId = ssaiPeriods.find(
+          (p) => p && p.id === sourcePeriod.id
+        );
+        if (!ssaiPeriodWithId) {
+          errors.push({
+            severity: "HIGH",
+            message: `Period ID missing in SSAI: ${sourcePeriod.id}`,
+            periodId: sourcePeriod.id,
+            impact: "Period identification may fail",
+          });
+        }
+      }
+
+      // Period start time validation
+      if (sourcePeriod.start) {
+        const sourceStartResult = this.parseDuration(
+          sourcePeriod.start,
+          `source period ${sourcePeriod.id || index} start`
+        );
+        if (sourceStartResult.error) {
+          errors.push(sourceStartResult.error);
+        } else {
+          const matchingSSAIPeriod = this.findMatchingPeriod(
+            sourcePeriod,
+            ssaiPeriods
+          );
+          if (matchingSSAIPeriod && matchingSSAIPeriod.start) {
+            const ssaiStartResult = this.parseDuration(
+              matchingSSAIPeriod.start,
+              `SSAI period ${matchingSSAIPeriod.id || "unknown"} start`
+            );
+            if (ssaiStartResult.error) {
+              errors.push(ssaiStartResult.error);
+            } else if (
+              sourceStartResult.value !== null &&
+              ssaiStartResult.value !== null
+            ) {
+              const startDiff = Math.abs(
+                sourceStartResult.value - ssaiStartResult.value
+              );
+              if (startDiff > 0.1) {
+                // 100ms tolerance
+                warnings.push({
+                  severity: "MEDIUM",
+                  message: `Period start time mismatch: ${startDiff.toFixed(
+                    3
+                  )}s`,
+                  periodId: sourcePeriod.id || `index_${index}`,
+                  expected: sourceStartResult.value.toFixed(3),
+                  actual: ssaiStartResult.value.toFixed(3),
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // Period duration validation
+      if (sourcePeriod.duration) {
+        const sourceDurationResult = this.parseDuration(
+          sourcePeriod.duration,
+          `source period ${sourcePeriod.id || index} duration`
+        );
+        if (sourceDurationResult.error) {
+          errors.push(sourceDurationResult.error);
+        }
+      }
+    });
+
+    // Validate SSAI-specific period features
+    ssaiPeriods.forEach((ssaiPeriod, index) => {
+      if (!ssaiPeriod) return;
+
+      // Check for ad period markers
+      if (this.isAdPeriod(ssaiPeriod)) {
+        const adValidation = this.validateAdPeriodStructure(ssaiPeriod, index);
+        errors.push(...adValidation.errors);
+        warnings.push(...adValidation.warnings);
+      }
+    });
+
+    return { errors, warnings };
+  },
+
+  validateAdPeriodStructure(adPeriod, index) {
+    const errors = [];
+    const warnings = [];
+
+    // Ad period should have duration
+    if (!adPeriod.duration) {
+      errors.push({
+        severity: "HIGH",
+        message: `Ad period missing duration`,
+        periodId: adPeriod.id || `ad_period_${index}`,
+        impact: "Ad duration cannot be determined",
+      });
+    }
+
+    // Ad period should have proper identification
+    if (!adPeriod.id || !adPeriod.id.toLowerCase().includes("ad")) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: `Ad period lacks clear identification`,
+        periodId: adPeriod.id || `period_${index}`,
+        note: "Consider using descriptive period IDs for ad periods",
+      });
+    }
+
+    // Validate AssetIdentifier for ad periods
+    if (adPeriod.AssetIdentifier) {
+      if (
+        !adPeriod.AssetIdentifier.schemeIdUri ||
+        !adPeriod.AssetIdentifier.value
+      ) {
+        errors.push({
+          severity: "MEDIUM",
+          message: `Incomplete AssetIdentifier in ad period`,
+          periodId: adPeriod.id || `ad_period_${index}`,
+          impact: "Ad tracking may be affected",
+        });
+      }
+    }
+
+    return { errors, warnings };
   },
   validateEventStreams(sourcePeriod, ssaiPeriod) {
     const errors = [];
@@ -452,6 +626,16 @@ const SSAIMPDValidator = {
       ? [sourceAS]
       : [];
     const ssaiArray = Array.isArray(ssaiAS) ? ssaiAS : ssaiAS ? [ssaiAS] : [];
+
+    // Enhanced AdaptationSet validation
+    const asStructureValidation = this.validateAdaptationSetStructure(
+      sourceArray,
+      ssaiArray,
+      periodId
+    );
+    errors.push(...asStructureValidation.errors);
+    warnings.push(...asStructureValidation.warnings);
+
     const sourceMap = this.buildSemanticMap(sourceArray);
     const ssaiMap = this.buildSemanticMap(ssaiArray);
     Object.keys(sourceMap).forEach((semanticKey) => {
@@ -517,6 +701,175 @@ const SSAIMPDValidator = {
       this.validateSupplementalProperties(srcSet, ssaiSet, periodId, warnings);
     });
     return { errors, warnings };
+  },
+
+  validateAdaptationSetStructure(sourceArray, ssaiArray, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    // AdaptationSet count validation
+    if (sourceArray.length > ssaiArray.length) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: `Missing AdaptationSets in SSAI period`,
+        periodId,
+        expected: sourceArray.length,
+        actual: ssaiArray.length,
+        impact: "Media tracks missing, playback may fail",
+      });
+    }
+
+    // Validate each source AdaptationSet
+    sourceArray.forEach((srcAS, index) => {
+      if (!srcAS) return;
+
+      // AdaptationSet ID validation
+      if (srcAS.id) {
+        const ssaiASWithId = ssaiArray.find((as) => as && as.id === srcAS.id);
+        if (!ssaiASWithId) {
+          warnings.push({
+            severity: "MEDIUM",
+            message: `AdaptationSet ID missing in SSAI: ${srcAS.id}`,
+            periodId,
+            adaptationSetId: srcAS.id,
+          });
+        }
+      }
+
+      // ContentType validation
+      if (!srcAS.contentType && !srcAS.mimeType) {
+        errors.push({
+          severity: "HIGH",
+          message: `AdaptationSet missing contentType and mimeType`,
+          periodId,
+          adaptationSetId: srcAS.id || `index_${index}`,
+          impact: "Content type cannot be determined",
+        });
+      }
+
+      // MimeType validation
+      if (srcAS.mimeType) {
+        const validMimeTypes = [
+          "video/mp4",
+          "audio/mp4",
+          "application/mp4",
+          "video/webm",
+          "audio/webm",
+          "application/ttml+xml",
+          "text/vtt",
+        ];
+        if (
+          !validMimeTypes.some((valid) =>
+            srcAS.mimeType.startsWith(valid.split("/")[0])
+          )
+        ) {
+          warnings.push({
+            severity: "MEDIUM",
+            message: `Unusual mimeType: ${srcAS.mimeType}`,
+            periodId,
+            adaptationSetId: srcAS.id || `index_${index}`,
+          });
+        }
+      }
+
+      // Codecs validation
+      if (!srcAS.codecs) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `AdaptationSet missing codecs attribute`,
+          periodId,
+          adaptationSetId: srcAS.id || `index_${index}`,
+          note: "Codecs help players determine compatibility",
+        });
+      } else {
+        const codecValidation = this.validateCodecs(
+          srcAS.codecs,
+          srcAS.contentType || srcAS.mimeType
+        );
+        if (!codecValidation.valid) {
+          warnings.push({
+            severity: "MEDIUM",
+            message: `Potentially invalid codec: ${srcAS.codecs}`,
+            periodId,
+            adaptationSetId: srcAS.id || `index_${index}`,
+            details: codecValidation.reason,
+          });
+        }
+      }
+
+      // Language validation
+      if (srcAS.lang && !this.isValidLanguageCode(srcAS.lang)) {
+        warnings.push({
+          severity: "LOW",
+          message: `Invalid language code: ${srcAS.lang}`,
+          periodId,
+          adaptationSetId: srcAS.id || `index_${index}`,
+          note: "Should follow RFC 5646 format",
+        });
+      }
+
+      // SegmentAlignment validation
+      if (srcAS.segmentAlignment === undefined) {
+        warnings.push({
+          severity: "LOW",
+          message: `AdaptationSet missing segmentAlignment attribute`,
+          periodId,
+          adaptationSetId: srcAS.id || `index_${index}`,
+          note: "Explicit segmentAlignment improves switching",
+        });
+      }
+    });
+
+    return { errors, warnings };
+  },
+
+  validateCodecs(codecs, contentTypeOrMime) {
+    if (!codecs) return { valid: false, reason: "No codecs specified" };
+
+    const codecStr = codecs.toLowerCase();
+    const contentType = contentTypeOrMime
+      ? contentTypeOrMime.toLowerCase()
+      : "";
+
+    // Video codecs
+    if (contentType.includes("video")) {
+      const validVideoCodecs = [
+        "avc1",
+        "avc3",
+        "hev1",
+        "hvc1",
+        "vp8",
+        "vp9",
+        "av01",
+      ];
+      if (!validVideoCodecs.some((valid) => codecStr.startsWith(valid))) {
+        return { valid: false, reason: `Unknown video codec: ${codecs}` };
+      }
+    }
+
+    // Audio codecs
+    if (contentType.includes("audio")) {
+      const validAudioCodecs = [
+        "mp4a",
+        "opus",
+        "vorbis",
+        "flac",
+        "ac-3",
+        "ec-3",
+      ];
+      if (!validAudioCodecs.some((valid) => codecStr.startsWith(valid))) {
+        return { valid: false, reason: `Unknown audio codec: ${codecs}` };
+      }
+    }
+
+    return { valid: true };
+  },
+
+  isValidLanguageCode(lang) {
+    if (!lang) return false;
+    // Basic RFC 5646 validation (simplified)
+    const langRegex = /^[a-z]{2,3}(-[A-Z]{2})?(-[a-z0-9]+)*$/;
+    return langRegex.test(lang) || lang === "und";
   },
   validateAdaptationSetAttributes(srcSet, ssaiSet, periodId, errors) {
     const criticalAttrs = ["mimeType", "codecs", "contentType", "lang"];
@@ -596,17 +949,220 @@ const SSAIMPDValidator = {
     });
   },
   validateAudioChannels(srcSet, ssaiSet, periodId, errors) {
-    const srcChannels = srcSet.AudioChannelConfiguration?.value;
-    const ssaiChannels = ssaiSet.AudioChannelConfiguration?.value;
-    if (srcChannels && srcChannels !== ssaiChannels) {
+    const srcChannels = srcSet.AudioChannelConfiguration;
+    const ssaiChannels = ssaiSet.AudioChannelConfiguration;
+
+    // Enhanced audio channel validation
+    const audioValidation = this.validateAudioChannelConfiguration(
+      srcChannels,
+      ssaiChannels,
+      periodId
+    );
+    errors.push(...audioValidation.errors);
+
+    // Legacy validation for backward compatibility
+    const srcChannelValue = srcChannels?.value;
+    const ssaiChannelValue = ssaiChannels?.value;
+    if (srcChannelValue && srcChannelValue !== ssaiChannelValue) {
       errors.push({
         severity: "HIGH",
         message: "Audio channel configuration mismatch",
         periodId,
-        expected: srcChannels,
-        actual: ssaiChannels,
+        expected: srcChannelValue,
+        actual: ssaiChannelValue,
       });
     }
+  },
+
+  validateAudioChannelConfiguration(srcChannels, ssaiChannels, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    if (!srcChannels && !ssaiChannels) {
+      return { errors, warnings };
+    }
+
+    if (srcChannels && !ssaiChannels) {
+      errors.push({
+        severity: "HIGH",
+        message: "AudioChannelConfiguration removed in SSAI",
+        periodId,
+        impact: "Audio channel information lost",
+        expected: `${srcChannels.schemeIdUri}: ${srcChannels.value}`,
+      });
+      return { errors, warnings };
+    }
+
+    if (!srcChannels && ssaiChannels) {
+      warnings.push({
+        severity: "INFO",
+        message: "AudioChannelConfiguration added in SSAI",
+        periodId,
+        added: `${ssaiChannels.schemeIdUri}: ${ssaiChannels.value}`,
+      });
+      return { errors, warnings };
+    }
+
+    // Validate schemeIdUri
+    if (srcChannels.schemeIdUri !== ssaiChannels.schemeIdUri) {
+      errors.push({
+        severity: "HIGH",
+        message: "AudioChannelConfiguration schemeIdUri mismatch",
+        periodId,
+        expected: srcChannels.schemeIdUri,
+        actual: ssaiChannels.schemeIdUri,
+        impact: "Different audio channel interpretation",
+      });
+    }
+
+    // Validate value based on scheme
+    if (srcChannels.value !== ssaiChannels.value) {
+      const channelValidation = this.validateChannelValue(
+        srcChannels.schemeIdUri,
+        srcChannels.value,
+        ssaiChannels.value
+      );
+
+      if (!channelValidation.compatible) {
+        errors.push({
+          severity: "HIGH",
+          message: "Incompatible audio channel configuration",
+          periodId,
+          scheme: srcChannels.schemeIdUri,
+          expected: srcChannels.value,
+          actual: ssaiChannels.value,
+          details: channelValidation.reason,
+        });
+      } else if (channelValidation.warning) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: "Audio channel configuration changed",
+          periodId,
+          scheme: srcChannels.schemeIdUri,
+          expected: srcChannels.value,
+          actual: ssaiChannels.value,
+          note: channelValidation.reason,
+        });
+      }
+    }
+
+    return { errors, warnings };
+  },
+
+  validateChannelValue(schemeIdUri, srcValue, ssaiValue) {
+    if (!schemeIdUri) {
+      return { compatible: false, reason: "No schemeIdUri specified" };
+    }
+
+    // MPEG-DASH Audio Channel Configuration
+    if (
+      schemeIdUri === "urn:mpeg:dash:23003:3:audio_channel_configuration:2011"
+    ) {
+      return this.validateMPEGChannelConfig(srcValue, ssaiValue);
+    }
+
+    // Dolby Audio Channel Configuration
+    if (schemeIdUri.includes("dolby")) {
+      return this.validateDolbyChannelConfig(srcValue, ssaiValue);
+    }
+
+    // DTS Audio Channel Configuration
+    if (schemeIdUri.includes("dts")) {
+      return this.validateDTSChannelConfig(srcValue, ssaiValue);
+    }
+
+    // Generic validation
+    if (srcValue === ssaiValue) {
+      return { compatible: true };
+    }
+
+    // Try to parse as numeric channel count
+    const srcNum = parseInt(srcValue);
+    const ssaiNum = parseInt(ssaiValue);
+    if (!isNaN(srcNum) && !isNaN(ssaiNum)) {
+      if (srcNum === ssaiNum) {
+        return { compatible: true };
+      } else {
+        return {
+          compatible: false,
+          reason: `Channel count mismatch: ${srcNum} vs ${ssaiNum}`,
+        };
+      }
+    }
+
+    return {
+      compatible: false,
+      reason: `Unknown channel configuration format for scheme ${schemeIdUri}`,
+    };
+  },
+
+  validateMPEGChannelConfig(srcValue, ssaiValue) {
+    // MPEG-DASH channel configuration values
+    const mpegChannelConfigs = {
+      1: "Mono",
+      2: "Stereo",
+      3: "3.0",
+      4: "4.0",
+      5: "5.0",
+      6: "5.1",
+      7: "6.1",
+      8: "7.1",
+    };
+
+    const srcConfig = mpegChannelConfigs[srcValue];
+    const ssaiConfig = mpegChannelConfigs[ssaiValue];
+
+    if (srcValue === ssaiValue) {
+      return { compatible: true };
+    }
+
+    if (srcConfig && ssaiConfig) {
+      // Check if it's a downmix (acceptable) or upmix (potentially problematic)
+      const srcChannels = parseInt(srcValue);
+      const ssaiChannels = parseInt(ssaiValue);
+
+      if (ssaiChannels < srcChannels) {
+        return {
+          compatible: true,
+          warning: true,
+          reason: `Downmix from ${srcConfig} to ${ssaiConfig}`,
+        };
+      } else {
+        return {
+          compatible: false,
+          reason: `Upmix from ${srcConfig} to ${ssaiConfig} not recommended`,
+        };
+      }
+    }
+
+    return {
+      compatible: false,
+      reason: `Invalid MPEG channel configuration: ${srcValue} vs ${ssaiValue}`,
+    };
+  },
+
+  validateDolbyChannelConfig(srcValue, ssaiValue) {
+    if (srcValue === ssaiValue) {
+      return { compatible: true };
+    }
+
+    // Dolby configurations are typically complex and should match exactly
+    return {
+      compatible: false,
+      reason: "Dolby audio configurations must match exactly",
+    };
+  },
+
+  validateDTSChannelConfig(srcValue, ssaiValue) {
+    if (srcValue === ssaiValue) {
+      return { compatible: true };
+    }
+
+    // DTS configurations are typically complex and should match exactly
+    return {
+      compatible: false,
+      reason: "DTS audio configurations must match exactly",
+    };
   },
   validateEssentialProperties(srcSet, ssaiSet, periodId, errors) {
     const srcArray = Array.isArray(srcSet.EssentialProperty)
@@ -736,6 +1292,17 @@ const SSAIMPDValidator = {
   validateRepresentations(sourceReps, ssaiReps, adaptationSetId, periodId) {
     const errors = [];
     const warnings = [];
+
+    // Enhanced Representation validation
+    const repStructureValidation = this.validateRepresentationStructure(
+      sourceReps,
+      ssaiReps,
+      adaptationSetId,
+      periodId
+    );
+    errors.push(...repStructureValidation.errors);
+    warnings.push(...repStructureValidation.warnings);
+
     const repMatches = this.matchRepresentations(sourceReps, ssaiReps);
     repMatches.forEach(({ srcRep, ssaiRep }) => {
       if (!ssaiRep) {
@@ -752,6 +1319,17 @@ const SSAIMPDValidator = {
         });
         return;
       }
+
+      // Enhanced representation attribute validation
+      const attrValidation = this.validateRepresentationAttributes(
+        srcRep,
+        ssaiRep,
+        adaptationSetId,
+        periodId
+      );
+      errors.push(...attrValidation.errors);
+      warnings.push(...attrValidation.warnings);
+
       const exactMatchAttrs = [
         "bandwidth",
         "width",
@@ -784,7 +1362,323 @@ const SSAIMPDValidator = {
         }
       });
     });
+
+    // ABR ladder validation
+    const abrValidation = this.validateABRLadder(
+      sourceReps,
+      ssaiReps,
+      adaptationSetId,
+      periodId
+    );
+    errors.push(...abrValidation.errors);
+    warnings.push(...abrValidation.warnings);
+
     return { errors, warnings, matches: repMatches };
+  },
+
+  validateRepresentationStructure(
+    sourceReps,
+    ssaiReps,
+    adaptationSetId,
+    periodId
+  ) {
+    const errors = [];
+    const warnings = [];
+
+    const sourceArray = Array.isArray(sourceReps)
+      ? sourceReps
+      : sourceReps
+      ? [sourceReps]
+      : [];
+    const ssaiArray = Array.isArray(ssaiReps)
+      ? ssaiReps
+      : ssaiReps
+      ? [ssaiReps]
+      : [];
+
+    // Representation count validation
+    if (sourceArray.length > ssaiArray.length) {
+      errors.push({
+        severity: "HIGH",
+        message: `Missing representations in SSAI AdaptationSet`,
+        periodId,
+        adaptationSetId,
+        expected: sourceArray.length,
+        actual: ssaiArray.length,
+        impact: "Reduced quality options for adaptive streaming",
+      });
+    }
+
+    // Validate each source representation
+    sourceArray.forEach((srcRep, index) => {
+      if (!srcRep) return;
+
+      // Representation ID validation
+      if (srcRep.id) {
+        const ssaiRepWithId = ssaiArray.find(
+          (rep) => rep && rep.id === srcRep.id
+        );
+        if (!ssaiRepWithId) {
+          warnings.push({
+            severity: "MEDIUM",
+            message: `Representation ID missing in SSAI: ${srcRep.id}`,
+            periodId,
+            adaptationSetId,
+            representationId: srcRep.id,
+          });
+        }
+      }
+
+      // Bandwidth validation (required)
+      if (!srcRep.bandwidth) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `Representation missing bandwidth`,
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || `index_${index}`,
+          impact: "Cannot determine bitrate for adaptive streaming",
+        });
+      } else if (srcRep.bandwidth <= 0) {
+        errors.push({
+          severity: "HIGH",
+          message: `Invalid bandwidth value: ${srcRep.bandwidth}`,
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || `index_${index}`,
+        });
+      }
+    });
+
+    return { errors, warnings };
+  },
+
+  validateRepresentationAttributes(srcRep, ssaiRep, adaptationSetId, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    // Video-specific validation
+    if (srcRep.width || srcRep.height) {
+      if (!ssaiRep.width || !ssaiRep.height) {
+        errors.push({
+          severity: "HIGH",
+          message: `Video representation missing resolution`,
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          expected: `${srcRep.width}x${srcRep.height}`,
+          actual: `${ssaiRep.width || "missing"}x${
+            ssaiRep.height || "missing"
+          }`,
+        });
+      } else {
+        // Validate aspect ratio consistency
+        const srcAspectRatio = srcRep.width / srcRep.height;
+        const ssaiAspectRatio = ssaiRep.width / ssaiRep.height;
+        const aspectDiff = Math.abs(srcAspectRatio - ssaiAspectRatio);
+        if (aspectDiff > 0.01) {
+          // 1% tolerance
+          warnings.push({
+            severity: "MEDIUM",
+            message: `Aspect ratio mismatch`,
+            periodId,
+            adaptationSetId,
+            representationId: srcRep.id || ssaiRep.id,
+            expected: srcAspectRatio.toFixed(3),
+            actual: ssaiAspectRatio.toFixed(3),
+          });
+        }
+      }
+
+      // Frame rate validation
+      if (srcRep.frameRate && ssaiRep.frameRate) {
+        const srcFR = this.parseFrameRate(srcRep.frameRate);
+        const ssaiFR = this.parseFrameRate(ssaiRep.frameRate);
+        if (srcFR && ssaiFR && Math.abs(srcFR - ssaiFR) > 0.1) {
+          errors.push({
+            severity: "HIGH",
+            message: `Frame rate mismatch`,
+            periodId,
+            adaptationSetId,
+            representationId: srcRep.id || ssaiRep.id,
+            expected: srcRep.frameRate,
+            actual: ssaiRep.frameRate,
+          });
+        }
+      }
+    }
+
+    // Audio-specific validation
+    if (srcRep.audioSamplingRate || ssaiRep.audioSamplingRate) {
+      if (srcRep.audioSamplingRate && !ssaiRep.audioSamplingRate) {
+        errors.push({
+          severity: "HIGH",
+          message: `Audio sampling rate missing in SSAI`,
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          expected: srcRep.audioSamplingRate,
+        });
+      } else if (srcRep.audioSamplingRate && ssaiRep.audioSamplingRate) {
+        const sampleRateDiff = Math.abs(
+          srcRep.audioSamplingRate - ssaiRep.audioSamplingRate
+        );
+        if (sampleRateDiff > 0) {
+          errors.push({
+            severity: "HIGH",
+            message: `Audio sampling rate mismatch`,
+            periodId,
+            adaptationSetId,
+            representationId: srcRep.id || ssaiRep.id,
+            expected: srcRep.audioSamplingRate,
+            actual: ssaiRep.audioSamplingRate,
+          });
+        }
+      }
+    }
+
+    // Codecs validation
+    if (srcRep.codecs && ssaiRep.codecs) {
+      if (srcRep.codecs !== ssaiRep.codecs) {
+        // Check if it's just a profile/level difference
+        const srcBaseCodec = srcRep.codecs.split(".")[0];
+        const ssaiBaseCodec = ssaiRep.codecs.split(".")[0];
+        if (srcBaseCodec !== ssaiBaseCodec) {
+          errors.push({
+            severity: "VERY_HIGH",
+            message: `Codec family mismatch`,
+            periodId,
+            adaptationSetId,
+            representationId: srcRep.id || ssaiRep.id,
+            expected: srcRep.codecs,
+            actual: ssaiRep.codecs,
+          });
+        } else {
+          warnings.push({
+            severity: "MEDIUM",
+            message: `Codec profile/level mismatch`,
+            periodId,
+            adaptationSetId,
+            representationId: srcRep.id || ssaiRep.id,
+            expected: srcRep.codecs,
+            actual: ssaiRep.codecs,
+            note: "Same codec family but different profile/level",
+          });
+        }
+      }
+    }
+
+    return { errors, warnings };
+  },
+
+  validateABRLadder(sourceReps, ssaiReps, adaptationSetId, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    const sourceArray = Array.isArray(sourceReps)
+      ? sourceReps
+      : sourceReps
+      ? [sourceReps]
+      : [];
+    const ssaiArray = Array.isArray(ssaiReps)
+      ? ssaiReps
+      : ssaiReps
+      ? [ssaiReps]
+      : [];
+
+    // Extract and sort bandwidths
+    const sourceBandwidths = sourceArray
+      .filter((rep) => rep && rep.bandwidth)
+      .map((rep) => rep.bandwidth)
+      .sort((a, b) => a - b);
+
+    const ssaiBandwidths = ssaiArray
+      .filter((rep) => rep && rep.bandwidth)
+      .map((rep) => rep.bandwidth)
+      .sort((a, b) => a - b);
+
+    if (sourceBandwidths.length === 0 || ssaiBandwidths.length === 0) {
+      return { errors, warnings };
+    }
+
+    // Check bandwidth range coverage
+    const sourceMin = sourceBandwidths[0];
+    const sourceMax = sourceBandwidths[sourceBandwidths.length - 1];
+    const ssaiMin = ssaiBandwidths[0];
+    const ssaiMax = ssaiBandwidths[ssaiBandwidths.length - 1];
+
+    if (ssaiMin > sourceMin * 1.1) {
+      // 10% tolerance
+      warnings.push({
+        severity: "MEDIUM",
+        message: `SSAI missing low-bandwidth representations`,
+        periodId,
+        adaptationSetId,
+        sourceMinBandwidth: sourceMin,
+        ssaiMinBandwidth: ssaiMin,
+        impact: "Users with poor connections may not be able to play",
+      });
+    }
+
+    if (ssaiMax < sourceMax * 0.9) {
+      // 10% tolerance
+      warnings.push({
+        severity: "MEDIUM",
+        message: `SSAI missing high-bandwidth representations`,
+        periodId,
+        adaptationSetId,
+        sourceMaxBandwidth: sourceMax,
+        ssaiMaxBandwidth: ssaiMax,
+        impact: "High-quality playback options reduced",
+      });
+    }
+
+    // Check for reasonable bandwidth distribution
+    if (sourceBandwidths.length > 2 && ssaiBandwidths.length > 2) {
+      const sourceBandwidthRatios =
+        this.calculateBandwidthRatios(sourceBandwidths);
+      const ssaiBandwidthRatios = this.calculateBandwidthRatios(ssaiBandwidths);
+
+      // Check if SSAI has reasonable step sizes
+      const avgSourceRatio =
+        sourceBandwidthRatios.reduce((sum, ratio) => sum + ratio, 0) /
+        sourceBandwidthRatios.length;
+      const avgSSAIRatio =
+        ssaiBandwidthRatios.reduce((sum, ratio) => sum + ratio, 0) /
+        ssaiBandwidthRatios.length;
+
+      if (avgSSAIRatio > avgSourceRatio * 2) {
+        warnings.push({
+          severity: "LOW",
+          message: `SSAI ABR ladder has large bandwidth gaps`,
+          periodId,
+          adaptationSetId,
+          note: "Consider adding intermediate quality levels for smoother adaptation",
+        });
+      }
+    }
+
+    return { errors, warnings };
+  },
+
+  parseFrameRate(frameRate) {
+    if (typeof frameRate === "number") return frameRate;
+    if (typeof frameRate === "string") {
+      if (frameRate.includes("/")) {
+        const [num, den] = frameRate.split("/").map(Number);
+        return den ? num / den : null;
+      }
+      return parseFloat(frameRate);
+    }
+    return null;
+  },
+
+  calculateBandwidthRatios(bandwidths) {
+    const ratios = [];
+    for (let i = 1; i < bandwidths.length; i++) {
+      ratios.push(bandwidths[i] / bandwidths[i - 1]);
+    }
+    return ratios;
   },
   validateSegmentTemplate(sourceTemplate, ssaiTemplate, repId, periodId) {
     const errors = [];
@@ -792,6 +1686,17 @@ const SSAIMPDValidator = {
     if (!sourceTemplate || !ssaiTemplate) {
       return { errors, warnings };
     }
+
+    // Enhanced SegmentTemplate validation
+    const templateStructureValidation = this.validateSegmentTemplateStructure(
+      sourceTemplate,
+      ssaiTemplate,
+      repId,
+      periodId
+    );
+    errors.push(...templateStructureValidation.errors);
+    warnings.push(...templateStructureValidation.warnings);
+
     const srcTimescale = sourceTemplate.timescale || 1;
     const ssaiTimescale = ssaiTemplate.timescale || 1;
     if (srcTimescale !== ssaiTimescale) {
@@ -865,6 +1770,164 @@ const SSAIMPDValidator = {
       });
     }
     return { errors, warnings };
+  },
+
+  validateSegmentTemplateStructure(
+    sourceTemplate,
+    ssaiTemplate,
+    repId,
+    periodId
+  ) {
+    const errors = [];
+    const warnings = [];
+
+    // Timescale validation
+    if (!sourceTemplate.timescale && !ssaiTemplate.timescale) {
+      warnings.push({
+        severity: "LOW",
+        message: "Both templates missing timescale (defaulting to 1)",
+        periodId,
+        representationId: repId,
+        note: "Explicit timescale improves clarity",
+      });
+    }
+
+    // Duration validation
+    if (sourceTemplate.duration && !ssaiTemplate.duration) {
+      errors.push({
+        severity: "HIGH",
+        message: "SSAI template missing duration",
+        periodId,
+        representationId: repId,
+        expected: sourceTemplate.duration,
+        impact: "Segment duration cannot be determined",
+      });
+    }
+
+    // StartNumber validation
+    if (sourceTemplate.startNumber && !ssaiTemplate.startNumber) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: "SSAI template missing startNumber",
+        periodId,
+        representationId: repId,
+        expected: sourceTemplate.startNumber,
+        note: "Will default to 1",
+      });
+    }
+
+    // Media template validation
+    if (sourceTemplate.media && !ssaiTemplate.media) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: "SSAI template missing media URL template",
+        periodId,
+        representationId: repId,
+        impact: "Cannot construct segment URLs",
+      });
+    } else if (sourceTemplate.media && ssaiTemplate.media) {
+      const mediaValidation = this.validateURLTemplate(
+        sourceTemplate.media,
+        ssaiTemplate.media,
+        "media"
+      );
+      if (!mediaValidation.valid) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Media URL template structure changed`,
+          periodId,
+          representationId: repId,
+          expected: sourceTemplate.media,
+          actual: ssaiTemplate.media,
+          details: mediaValidation.reason,
+        });
+      }
+    }
+
+    // Initialization template validation
+    if (sourceTemplate.initialization && !ssaiTemplate.initialization) {
+      errors.push({
+        severity: "HIGH",
+        message: "SSAI template missing initialization URL template",
+        periodId,
+        representationId: repId,
+        impact: "Cannot construct initialization segment URLs",
+      });
+    } else if (sourceTemplate.initialization && ssaiTemplate.initialization) {
+      const initValidation = this.validateURLTemplate(
+        sourceTemplate.initialization,
+        ssaiTemplate.initialization,
+        "initialization"
+      );
+      if (!initValidation.valid) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Initialization URL template structure changed`,
+          periodId,
+          representationId: repId,
+          expected: sourceTemplate.initialization,
+          actual: ssaiTemplate.initialization,
+          details: initValidation.reason,
+        });
+      }
+    }
+
+    // SegmentTimeline validation
+    if (sourceTemplate.SegmentTimeline && !ssaiTemplate.SegmentTimeline) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: "SSAI template missing SegmentTimeline",
+        periodId,
+        representationId: repId,
+        impact: "Segment timing information lost",
+      });
+    } else if (
+      !sourceTemplate.SegmentTimeline &&
+      ssaiTemplate.SegmentTimeline
+    ) {
+      warnings.push({
+        severity: "INFO",
+        message: "SSAI added SegmentTimeline",
+        periodId,
+        representationId: repId,
+        note: "May provide more precise timing",
+      });
+    }
+
+    return { errors, warnings };
+  },
+
+  validateURLTemplate(sourceTemplate, ssaiTemplate) {
+    // Check for required template variables
+    const requiredVars = ["$RepresentationID$", "$Number$"];
+
+    let valid = true;
+    let reason = "";
+
+    // Check if required variables are preserved
+    for (const reqVar of requiredVars) {
+      const sourceHas = sourceTemplate.includes(reqVar);
+      const ssaiHas = ssaiTemplate.includes(reqVar);
+
+      if (sourceHas && !ssaiHas) {
+        valid = false;
+        reason += `Missing required variable ${reqVar}. `;
+      }
+    }
+
+    // Check for $Time$ vs $Number$ consistency
+    const sourceUsesTime = sourceTemplate.includes("$Time$");
+    const ssaiUsesTime = ssaiTemplate.includes("$Time$");
+    const sourceUsesNumber = sourceTemplate.includes("$Number$");
+    const ssaiUsesNumber = ssaiTemplate.includes("$Number$");
+
+    if (sourceUsesTime && !ssaiUsesTime && ssaiUsesNumber) {
+      reason += "Changed from $Time$ to $Number$ addressing. ";
+    } else if (sourceUsesNumber && !ssaiUsesNumber && ssaiUsesTime) {
+      reason += "Changed from $Number$ to $Time$ addressing. ";
+    }
+
+    return { valid, reason: reason.trim() };
   },
   validateSegmentTimelineMath(
     srcTimeline,
@@ -954,6 +2017,16 @@ const SSAIMPDValidator = {
     if (srcArray.length === 0) {
       return { errors, warnings };
     }
+
+    // Enhanced DRM validation
+    const drmStructureValidation = this.validateDRMStructure(
+      srcArray,
+      ssaiArray,
+      periodId
+    );
+    errors.push(...drmStructureValidation.errors);
+    warnings.push(...drmStructureValidation.warnings);
+
     srcArray.forEach((srcCP) => {
       if (!srcCP) return;
       const ssaiCP = ssaiArray.find(
@@ -967,6 +2040,16 @@ const SSAIMPDValidator = {
         });
         return;
       }
+
+      // Enhanced DRM system validation
+      const drmSystemValidation = this.validateDRMSystem(
+        srcCP,
+        ssaiCP,
+        periodId
+      );
+      errors.push(...drmSystemValidation.errors);
+      warnings.push(...drmSystemValidation.warnings);
+
       if (srcCP.value && srcCP.value !== ssaiCP.value) {
         warnings.push({
           severity: "MEDIUM",
@@ -999,34 +2082,273 @@ const SSAIMPDValidator = {
     });
     return { errors, warnings };
   },
-  parseDuration(isoDuration, context = '') {
-    if (!isoDuration) return { value: null, error: null };
-    if (typeof isoDuration === "number") return { value: isoDuration, error: null };
-    if (typeof isoDuration !== "string") return { 
-      value: null, 
-      error: { 
-        severity: "HIGH", 
-        message: `Invalid duration type: expected string or number, got ${typeof isoDuration}`,
-        context: context,
-        value: isoDuration
+
+  validateDRMStructure(srcArray, ssaiArray, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    // Check for missing DRM systems
+    if (srcArray.length > ssaiArray.length) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: `Missing DRM systems in SSAI`,
+        periodId,
+        expected: srcArray.length,
+        actual: ssaiArray.length,
+        impact: "Some DRM systems not supported, playback may fail",
+      });
+    }
+
+    // Validate DRM system coverage
+    const sourceDRMSystems = srcArray
+      .map((cp) => cp.schemeIdUri)
+      .filter(Boolean);
+    const ssaiDRMSystems = ssaiArray
+      .map((cp) => cp.schemeIdUri)
+      .filter(Boolean);
+
+    sourceDRMSystems.forEach((srcSystem) => {
+      if (!ssaiDRMSystems.includes(srcSystem)) {
+        const systemName = this.getDRMSystemName(srcSystem);
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `Missing DRM system: ${systemName}`,
+          periodId,
+          schemeIdUri: srcSystem,
+          impact: `${systemName} protected content cannot be played`,
+        });
       }
+    });
+
+    // Check for additional DRM systems in SSAI
+    const addedSystems = ssaiDRMSystems.filter(
+      (ssaiSystem) => !sourceDRMSystems.includes(ssaiSystem)
+    );
+    if (addedSystems.length > 0) {
+      warnings.push({
+        severity: "INFO",
+        message: `SSAI added DRM systems`,
+        periodId,
+        addedSystems: addedSystems.map((sys) => this.getDRMSystemName(sys)),
+        note: "Additional DRM support may improve compatibility",
+      });
+    }
+
+    return { errors, warnings };
+  },
+
+  validateDRMSystem(srcCP, ssaiCP, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    const systemName = this.getDRMSystemName(srcCP.schemeIdUri);
+
+    // Validate schemeIdUri format
+    if (!this.isValidDRMSchemeIdUri(srcCP.schemeIdUri)) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: `Non-standard DRM schemeIdUri: ${srcCP.schemeIdUri}`,
+        periodId,
+        note: "May not be recognized by all players",
+      });
+    }
+
+    // Validate PSSH data
+    if (srcCP.pssh) {
+      const psshValidation = this.validatePSSH(srcCP.pssh);
+      if (!psshValidation.valid) {
+        errors.push({
+          severity: "HIGH",
+          message: `Invalid PSSH data for ${systemName}`,
+          periodId,
+          schemeIdUri: srcCP.schemeIdUri,
+          details: psshValidation.reason,
+        });
+      }
+    }
+
+    // Validate default_KID format
+    if (srcCP.default_KID) {
+      const kidValidation = this.validateKeyID(srcCP.default_KID);
+      if (!kidValidation.valid) {
+        errors.push({
+          severity: "HIGH",
+          message: `Invalid default_KID format for ${systemName}`,
+          periodId,
+          schemeIdUri: srcCP.schemeIdUri,
+          expected: "32-character hex string or UUID format",
+          actual: srcCP.default_KID,
+        });
+      }
+    }
+
+    // System-specific validation
+    if (srcCP.schemeIdUri === "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed") {
+      // Widevine-specific validation
+      const widevineValidation = this.validateWidevineCP(
+        srcCP,
+        ssaiCP,
+        periodId
+      );
+      errors.push(...widevineValidation.errors);
+      warnings.push(...widevineValidation.warnings);
+    } else if (
+      srcCP.schemeIdUri === "urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95"
+    ) {
+      // PlayReady-specific validation
+      const playreadyValidation = this.validatePlayReadyCP(
+        srcCP,
+        ssaiCP,
+        periodId
+      );
+      errors.push(...playreadyValidation.errors);
+      warnings.push(...playreadyValidation.warnings);
+    }
+
+    return { errors, warnings };
+  },
+
+  getDRMSystemName(schemeIdUri) {
+    const drmSystems = {
+      "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed": "Widevine",
+      "urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95": "PlayReady",
+      "urn:uuid:94ce86fb-07ff-4f43-adb8-93d2fa968ca2": "FairPlay",
+      "urn:mpeg:dash:mp4protection:2011": "Common Encryption",
     };
-    
-    const regex = /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+    return drmSystems[schemeIdUri] || schemeIdUri;
+  },
+
+  isValidDRMSchemeIdUri(schemeIdUri) {
+    if (!schemeIdUri) return false;
+
+    // Standard DRM system UUIDs
+    const standardSystems = [
+      "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed", // Widevine
+      "urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95", // PlayReady
+      "urn:uuid:94ce86fb-07ff-4f43-adb8-93d2fa968ca2", // FairPlay
+      "urn:mpeg:dash:mp4protection:2011", // Common Encryption
+    ];
+
+    if (standardSystems.includes(schemeIdUri)) return true;
+
+    // Check for valid UUID format
+    const uuidRegex =
+      /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(schemeIdUri);
+  },
+
+  validatePSSH(pssh) {
+    if (!pssh) return { valid: true }; // PSSH is optional
+
+    try {
+      // Basic base64 validation
+      const decoded = atob(pssh);
+      if (decoded.length < 32) {
+        // Minimum PSSH box size
+        return { valid: false, reason: "PSSH data too short" };
+      }
+
+      // Check PSSH box header
+      const header = decoded.substring(4, 8);
+      if (header !== "pssh") {
+        return { valid: false, reason: "Invalid PSSH box header" };
+      }
+
+      return { valid: true };
+    } catch (e) {
+      return { valid: false, reason: "Invalid base64 encoding" };
+    }
+  },
+
+  validateKeyID(keyId) {
+    if (!keyId) return { valid: false, reason: "Key ID is empty" };
+
+    // Remove hyphens for validation
+    const cleanKeyId = keyId.replace(/-/g, "");
+
+    // Check for 32-character hex string
+    const hexRegex = /^[0-9a-f]{32}$/i;
+    if (hexRegex.test(cleanKeyId)) {
+      return { valid: true };
+    }
+
+    // Check for UUID format
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(keyId)) {
+      return { valid: true };
+    }
+
+    return {
+      valid: false,
+      reason: "Must be 32-character hex string or UUID format",
+    };
+  },
+
+  validateWidevineCP(srcCP, ssaiCP, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    // Widevine should have PSSH
+    if (!srcCP.pssh && !ssaiCP.pssh) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: "Widevine ContentProtection missing PSSH",
+        periodId,
+        note: "PSSH may be provided in initialization segment instead",
+      });
+    }
+
+    return { errors, warnings };
+  },
+
+  validatePlayReadyCP(srcCP, ssaiCP, periodId) {
+    const errors = [];
+    const warnings = [];
+
+    // PlayReady often uses pro:mspr element
+    if (srcCP.value && srcCP.value !== ssaiCP.value) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: "PlayReady value attribute mismatch",
+        periodId,
+        note: "May contain different license server URLs",
+      });
+    }
+
+    return { errors, warnings };
+  },
+  parseDuration(isoDuration, context = "") {
+    if (!isoDuration) return { value: null, error: null };
+    if (typeof isoDuration === "number")
+      return { value: isoDuration, error: null };
+    if (typeof isoDuration !== "string")
+      return {
+        value: null,
+        error: {
+          severity: "HIGH",
+          message: `Invalid duration type: expected string or number, got ${typeof isoDuration}`,
+          context: context,
+          value: isoDuration,
+        },
+      };
+
+    const regex =
+      /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
     const matches = isoDuration.match(regex);
     if (!matches) {
-      return { 
-        value: null, 
-        error: { 
-          severity: "HIGH", 
+      return {
+        value: null,
+        error: {
+          severity: "HIGH",
           message: `Invalid ISO 8601 duration format: ${isoDuration}`,
           context: context,
           value: isoDuration,
-          expectedFormat: "PT[H]H[M]M[S]S (e.g., PT1H30M45S)"
-        }
+          expectedFormat: "PT[H]H[M]M[S]S (e.g., PT1H30M45S)",
+        },
       };
     }
-    
+
     const hours = parseFloat(matches[1] || 0);
     const minutes = parseFloat(matches[2] || 0);
     const seconds = parseFloat(matches[3] || 0);
@@ -1043,21 +2365,31 @@ const SSAIMPDValidator = {
     periodsArray.forEach((period) => {
       if (!period) return;
       const startResult = period.start
-        ? this.parseDuration(period.start, `period ${period.id || 'unknown'} start`)
+        ? this.parseDuration(
+            period.start,
+            `period ${period.id || "unknown"} start`
+          )
         : { value: currentTime, error: null };
       const durationResult = period.duration
-        ? this.parseDuration(period.duration, `period ${period.id || 'unknown'} duration`)
+        ? this.parseDuration(
+            period.duration,
+            `period ${period.id || "unknown"} duration`
+          )
         : { value: null, error: null };
 
-      // Note: We don't add errors to the main validation here since buildTimeline 
+      // Note: We don't add errors to the main validation here since buildTimeline
       // is a utility function. The errors will be caught in the main validation flow.
-      
-      const actualStart = startResult.value !== null ? startResult.value : currentTime;
+
+      const actualStart =
+        startResult.value !== null ? startResult.value : currentTime;
       timeline.push({
         id: period.id,
         start: actualStart,
         duration: durationResult.value,
-        end: durationResult.value !== null ? actualStart + durationResult.value : null,
+        end:
+          durationResult.value !== null
+            ? actualStart + durationResult.value
+            : null,
         period,
       });
       if (durationResult.value !== null) {
@@ -1212,7 +2544,9 @@ const SSAIMPDValidator = {
         return;
       }
       if (s.r !== undefined && s.r < 0) {
-        throw new Error(`expandSegmentTimeline called with open-ended repeat (r=${s.r}). This should be detected earlier and handled by hasOpenEndedRepeat check.`);
+        throw new Error(
+          `expandSegmentTimeline called with open-ended repeat (r=${s.r}). This should be detected earlier and handled by hasOpenEndedRepeat check.`
+        );
       }
       const startTime = s.t !== undefined ? s.t / timescale : currentTime;
       const duration = s.d / timescale;
@@ -1270,6 +2604,12 @@ const SSAIMPDValidator = {
       const rootResult = this.validateMPDRoot(sourceMPD, ssaiMPD);
       results.errors.push(...rootResult.errors);
       results.warnings.push(...rootResult.warnings);
+
+      // Enhanced validation for SSAI/Live critical nodes
+      const liveSSAIValidation = this.validateLiveSSAINodes(sourceMPD, ssaiMPD);
+      results.errors.push(...liveSSAIValidation.errors);
+      results.warnings.push(...liveSSAIValidation.warnings);
+
       const utcResult = this.validateUTCTiming(sourceMPD, ssaiMPD);
       results.errors.push(...utcResult.errors);
       results.warnings.push(...utcResult.warnings);
@@ -1387,22 +2727,289 @@ const SSAIMPDValidator = {
       return results;
     }
   },
+
+  validateLiveSSAINodes(sourceMPD, ssaiMPD) {
+    const errors = [];
+    const warnings = [];
+
+    // Validate Location elements
+    const locationValidation = this.validateLocationElements(
+      sourceMPD,
+      ssaiMPD
+    );
+    errors.push(...locationValidation.errors);
+    warnings.push(...locationValidation.warnings);
+
+    // Validate PatchLocation elements
+    const patchLocationValidation = this.validatePatchLocationElements(
+      sourceMPD,
+      ssaiMPD
+    );
+    errors.push(...patchLocationValidation.errors);
+    warnings.push(...patchLocationValidation.warnings);
+
+    // Validate EssentialProperty and SupplementalProperty at MPD level
+    const propertyValidation = this.validateMPDProperties(sourceMPD, ssaiMPD);
+    errors.push(...propertyValidation.errors);
+    warnings.push(...propertyValidation.warnings);
+
+    // Validate SSAI-specific requirements
+    const ssaiRequirements = this.validateSSAIRequirements(sourceMPD, ssaiMPD);
+    errors.push(...ssaiRequirements.errors);
+    warnings.push(...ssaiRequirements.warnings);
+
+    return { errors, warnings };
+  },
+
+  validateLocationElements(sourceMPD, ssaiMPD) {
+    const errors = [];
+    const warnings = [];
+
+    const sourceLocations = Array.isArray(sourceMPD.Location)
+      ? sourceMPD.Location
+      : sourceMPD.Location
+      ? [sourceMPD.Location]
+      : [];
+    const ssaiLocations = Array.isArray(ssaiMPD.Location)
+      ? ssaiMPD.Location
+      : ssaiMPD.Location
+      ? [ssaiMPD.Location]
+      : [];
+
+    // For dynamic MPDs, Location elements are important for manifest updates
+    if (sourceMPD.type === "dynamic" || ssaiMPD.type === "dynamic") {
+      if (sourceLocations.length > 0 && ssaiLocations.length === 0) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: "Location elements removed in SSAI manifest",
+          impact: "Manifest update mechanism may be affected",
+          note: "Ensure alternative update mechanism is available",
+        });
+      }
+
+      // Validate Location URLs
+      ssaiLocations.forEach((location, index) => {
+        if (!this.isValidURL(location)) {
+          errors.push({
+            severity: "HIGH",
+            message: `Invalid Location URL at index ${index}`,
+            url: location,
+            impact: "Manifest updates may fail",
+          });
+        }
+      });
+    }
+
+    return { errors, warnings };
+  },
+
+  validatePatchLocationElements(sourceMPD, ssaiMPD) {
+    const errors = [];
+    const warnings = [];
+
+    const sourcePatchLocations = Array.isArray(sourceMPD.PatchLocation)
+      ? sourceMPD.PatchLocation
+      : sourceMPD.PatchLocation
+      ? [sourceMPD.PatchLocation]
+      : [];
+    const ssaiPatchLocations = Array.isArray(ssaiMPD.PatchLocation)
+      ? ssaiMPD.PatchLocation
+      : ssaiMPD.PatchLocation
+      ? [ssaiMPD.PatchLocation]
+      : [];
+
+    // PatchLocation is used for efficient manifest updates
+    if (sourcePatchLocations.length > 0 && ssaiPatchLocations.length === 0) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: "PatchLocation elements removed in SSAI manifest",
+        impact: "Efficient manifest patching not available",
+        note: "Full manifest downloads will be required",
+      });
+    }
+
+    // Validate PatchLocation URLs
+    ssaiPatchLocations.forEach((patchLocation, index) => {
+      if (!this.isValidURL(patchLocation)) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Invalid PatchLocation URL at index ${index}`,
+          url: patchLocation,
+          impact: "Manifest patching may fail",
+        });
+      }
+    });
+
+    return { errors, warnings };
+  },
+
+  validateMPDProperties(sourceMPD, ssaiMPD) {
+    const errors = [];
+    const warnings = [];
+
+    // Validate EssentialProperty at MPD level
+    const sourceEssential = Array.isArray(sourceMPD.EssentialProperty)
+      ? sourceMPD.EssentialProperty
+      : sourceMPD.EssentialProperty
+      ? [sourceMPD.EssentialProperty]
+      : [];
+    const ssaiEssential = Array.isArray(ssaiMPD.EssentialProperty)
+      ? ssaiMPD.EssentialProperty
+      : ssaiMPD.EssentialProperty
+      ? [ssaiMPD.EssentialProperty]
+      : [];
+
+    sourceEssential.forEach((prop) => {
+      if (!prop) return;
+      const ssaiProp = ssaiEssential.find(
+        (p) => p && p.schemeIdUri === prop.schemeIdUri
+      );
+      if (!ssaiProp) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `MPD EssentialProperty removed: ${prop.schemeIdUri}`,
+          impact:
+            "Player MUST understand this property - removal breaks compliance",
+          schemeIdUri: prop.schemeIdUri,
+          value: prop.value,
+        });
+      } else if (prop.value && prop.value !== ssaiProp.value) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `MPD EssentialProperty value mismatch`,
+          schemeIdUri: prop.schemeIdUri,
+          expected: prop.value,
+          actual: ssaiProp.value,
+        });
+      }
+    });
+
+    // Validate SupplementalProperty at MPD level
+    const sourceSupplemental = Array.isArray(sourceMPD.SupplementalProperty)
+      ? sourceMPD.SupplementalProperty
+      : sourceMPD.SupplementalProperty
+      ? [sourceMPD.SupplementalProperty]
+      : [];
+    const ssaiSupplemental = Array.isArray(ssaiMPD.SupplementalProperty)
+      ? ssaiMPD.SupplementalProperty
+      : ssaiMPD.SupplementalProperty
+      ? [ssaiMPD.SupplementalProperty]
+      : [];
+
+    sourceSupplemental.forEach((prop) => {
+      if (!prop) return;
+      const ssaiProp = ssaiSupplemental.find(
+        (p) => p && p.schemeIdUri === prop.schemeIdUri
+      );
+      if (!ssaiProp) {
+        warnings.push({
+          severity: "LOW",
+          message: `MPD SupplementalProperty removed: ${prop.schemeIdUri}`,
+          note: "Optional metadata, not critical for playback",
+          schemeIdUri: prop.schemeIdUri,
+        });
+      }
+    });
+
+    return { errors, warnings };
+  },
+
+  validateSSAIRequirements(sourceMPD, ssaiMPD) {
+    const errors = [];
+    const warnings = [];
+
+    // Check for SSAI-specific duration requirements
+    if (
+      sourceMPD.mediaPresentationDuration &&
+      ssaiMPD.mediaPresentationDuration
+    ) {
+      const sourceDurationResult = this.parseDuration(
+        sourceMPD.mediaPresentationDuration,
+        "source MPD duration"
+      );
+      const ssaiDurationResult = this.parseDuration(
+        ssaiMPD.mediaPresentationDuration,
+        "SSAI MPD duration"
+      );
+
+      if (sourceDurationResult.value && ssaiDurationResult.value) {
+        // SSAI duration should be >= source duration (due to ad insertion)
+        if (ssaiDurationResult.value < sourceDurationResult.value) {
+          errors.push({
+            severity: "VERY_HIGH",
+            message:
+              "SSAI duration shorter than source - content may be missing",
+            expected: `>= ${sourceDurationResult.value.toFixed(2)}s`,
+            actual: `${ssaiDurationResult.value.toFixed(2)}s`,
+            impact: "Content truncation detected",
+          });
+        }
+
+        // Check for reasonable ad insertion ratio
+        const durationIncrease =
+          ssaiDurationResult.value - sourceDurationResult.value;
+        const adRatio = durationIncrease / sourceDurationResult.value;
+        if (adRatio > 0.5) {
+          // More than 50% increase
+          warnings.push({
+            severity: "MEDIUM",
+            message: `High ad insertion ratio: ${(adRatio * 100).toFixed(1)}%`,
+            adDuration: `${durationIncrease.toFixed(2)}s`,
+            note: "Verify if ad load is intentional",
+          });
+        }
+      }
+    }
+
+    // Check for proportional buffer requirements
+    if (sourceMPD.minBufferTime && ssaiMPD.minBufferTime) {
+      const sourceBufferResult = this.parseDuration(
+        sourceMPD.minBufferTime,
+        "source minBufferTime"
+      );
+      const ssaiBufferResult = this.parseDuration(
+        ssaiMPD.minBufferTime,
+        "SSAI minBufferTime"
+      );
+
+      if (sourceBufferResult.value && ssaiBufferResult.value) {
+        // SSAI should maintain proportional buffer time
+        const bufferRatio = ssaiBufferResult.value / sourceBufferResult.value;
+        if (bufferRatio < 0.8) {
+          // Less than 80% of original
+          warnings.push({
+            severity: "HIGH",
+            message: "SSAI significantly reduced buffer time",
+            expected: `>= ${(sourceBufferResult.value * 0.8).toFixed(2)}s`,
+            actual: `${ssaiBufferResult.value.toFixed(2)}s`,
+            impact: "May cause rebuffering during ad transitions",
+          });
+        }
+      }
+    }
+
+    return { errors, warnings };
+  },
   findMatchingPeriod(sourcePeriod, ssaiPeriods) {
     if (!sourcePeriod || !Array.isArray(ssaiPeriods)) return null;
     let match = ssaiPeriods.find((p) => p && p.id === sourcePeriod.id);
     if (match) return match;
-    
+
     const sourceStartResult = sourcePeriod.start
-      ? this.parseDuration(sourcePeriod.start, `source period ${sourcePeriod.id || 'unknown'} start`)
+      ? this.parseDuration(
+          sourcePeriod.start,
+          `source period ${sourcePeriod.id || "unknown"} start`
+        )
       : { value: 0, error: null };
-    
+
     match = ssaiPeriods.find((p) => {
       if (!p) return false;
-      const ssaiStartResult = p.start 
-        ? this.parseDuration(p.start, `SSAI period ${p.id || 'unknown'} start`) 
+      const ssaiStartResult = p.start
+        ? this.parseDuration(p.start, `SSAI period ${p.id || "unknown"} start`)
         : { value: 0, error: null };
-      
-      if (sourceStartResult.value === null || ssaiStartResult.value === null) return false;
+
+      if (sourceStartResult.value === null || ssaiStartResult.value === null)
+        return false;
       return Math.abs(sourceStartResult.value - ssaiStartResult.value) < 0.1;
     });
     return match;

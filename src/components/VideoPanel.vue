@@ -20,27 +20,37 @@
     <video ref="videoElement" controls class="video-player"></video>
 
     <div class="mpd-info">
-      <h3>{{ title }} MPD Info</h3>
-      <div v-if="!manifest">
-        <p class="placeholder-text">
-          No MPD loaded. Load a manifest to see MPD information.
-        </p>
+      <div class="mpd-header" @click="toggleMpdInfo">
+        <h3>{{ title }} MPD Info</h3>
+        <button
+          class="collapse-button"
+          :class="{ collapsed: !mpdInfoExpanded }"
+        >
+          <span class="collapse-icon">{{ mpdInfoExpanded ? "▼" : "▶" }}</span>
+        </button>
       </div>
-      <div v-else>
-        <table class="mpd-table">
-          <thead>
-            <tr>
-              <th>Attribute</th>
-              <th>Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(value, key) in mpdInfo" :key="key">
-              <td>{{ key }}</td>
-              <td>{{ value || "-" }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-show="mpdInfoExpanded" class="mpd-content">
+        <div v-if="!manifest">
+          <p class="placeholder-text">
+            No MPD loaded. Load a manifest to see MPD information.
+          </p>
+        </div>
+        <div v-else>
+          <table class="mpd-table">
+            <thead>
+              <tr>
+                <th>Attribute</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(value, key) in mpdInfo" :key="key">
+                <td>{{ key }}</td>
+                <td>{{ formatMpdValue(value) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -82,10 +92,29 @@ export default {
       default: "source",
     },
   },
+  data() {
+    return {
+      mpdInfoExpanded: false, // Start collapsed to save space
+    };
+  },
   emits: ["update:url", "load-manifest", "play-stream", "stop-stream"],
   computed: {
     loadButtonClass() {
       return this.panelType === "ssai" ? "load-button-ssai" : "load-button";
+    },
+  },
+  methods: {
+    toggleMpdInfo() {
+      this.mpdInfoExpanded = !this.mpdInfoExpanded;
+    },
+    formatMpdValue(value) {
+      if (value === null || value === undefined || value === "") {
+        return "-";
+      }
+      if (typeof value === "object") {
+        return JSON.stringify(value, null, 2);
+      }
+      return value;
     },
   },
 };
@@ -291,10 +320,28 @@ export default {
   margin-top: 20px;
 }
 
+.mpd-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 8px 12px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+  border: 1px solid #e2e8f0;
+  margin-bottom: 8px;
+}
+
+.mpd-header:hover {
+  background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
 .mpd-info h3 {
   font-size: 1.2rem;
   font-weight: 600;
-  margin-bottom: 12px;
+  margin: 0;
   color: #374151;
   display: flex;
   align-items: center;
@@ -304,6 +351,44 @@ export default {
 .mpd-info h3::before {
   /* content: '📊'; */
   font-size: 1rem;
+}
+
+.collapse-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+}
+
+.collapse-button:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.collapse-icon {
+  font-size: 14px;
+  font-weight: bold;
+  color: #6b7280;
+  transition: transform 0.2s ease;
+}
+
+.collapse-button.collapsed .collapse-icon {
+  transform: rotate(0deg);
+}
+
+.collapse-button:not(.collapsed) .collapse-icon {
+  transform: rotate(0deg);
+}
+
+.mpd-content {
+  animation: slideDown 0.3s ease-out;
+  overflow: hidden;
 }
 
 .mpd-table {
@@ -435,5 +520,24 @@ export default {
   .mpd-table td {
     padding: 6px 8px;
   }
+}
+
+/* Animations */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    max-height: 1000px;
+    transform: translateY(0);
+  }
+}
+
+/* Smooth transitions for collapsible content */
+.mpd-content {
+  transition: all 0.3s ease;
 }
 </style>
