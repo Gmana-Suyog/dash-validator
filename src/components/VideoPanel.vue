@@ -36,25 +36,57 @@
           </p>
         </div>
         <div v-else>
-          <table class="mpd-table">
-            <thead>
-              <tr>
-                <th>Attribute</th>
-                <th>Value</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(value, key) in mpdInfo" :key="key">
-                <td>{{ key }}</td>
-                <td>{{ formatMpdValue(value) }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <!-- View Toggle Buttons -->
+          <div class="view-toggle-buttons">
+            <button
+              @click="setActiveView('table')"
+              :class="['view-toggle-btn', { active: activeView === 'table' }]"
+              title="Table View"
+            >
+              <span class="view-icon">📊</span>
+              <span class="view-label">Table</span>
+            </button>
+            <button
+              @click="setActiveView('xml')"
+              :class="['view-toggle-btn', { active: activeView === 'xml' }]"
+              title="XML View"
+            >
+              <span class="view-icon">📄</span>
+              <span class="view-label">XML</span>
+            </button>
+          </div>
+
+          <!-- Table View -->
+          <div
+            v-show="activeView === 'table'"
+            class="view-content mpd-table-wrapper"
+          >
+            <table class="mpd-table">
+              <thead>
+                <tr>
+                  <th>Attribute</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(value, key) in mpdInfo" :key="key">
+                  <td>{{ key }}</td>
+                  <td>{{ formatMpdValue(value) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- XML View -->
+          <div
+            v-show="activeView === 'xml'"
+            class="view-content xml-view-wrapper"
+          >
+            <pre class="xml-display">{{ formattedManifest }}</pre>
+          </div>
         </div>
       </div>
     </div>
-
-    <pre class="manifest-display">{{ formattedManifest }}</pre>
   </div>
 </template>
 
@@ -95,6 +127,7 @@ export default {
   data() {
     return {
       mpdInfoExpanded: false, // Start collapsed to save space
+      activeView: "table", // Default to table view
     };
   },
   emits: ["update:url", "load-manifest", "play-stream", "stop-stream"],
@@ -106,6 +139,9 @@ export default {
   methods: {
     toggleMpdInfo() {
       this.mpdInfoExpanded = !this.mpdInfoExpanded;
+    },
+    setActiveView(view) {
+      this.activeView = view;
     },
     formatMpdValue(value) {
       if (value === null || value === undefined || value === "") {
@@ -281,41 +317,6 @@ export default {
   background: #000;
 }
 
-.manifest-display {
-  font-size: 12px;
-  overflow: auto;
-  margin-top: 20px;
-  max-height: 300px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: #1f2937;
-  color: #f9fafb;
-  padding: 16px;
-  border-radius: 8px;
-  border: 1px solid #374151;
-  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
-  line-height: 1.5;
-}
-
-.manifest-display::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.manifest-display::-webkit-scrollbar-track {
-  background: #374151;
-  border-radius: 4px;
-}
-
-.manifest-display::-webkit-scrollbar-thumb {
-  background: #6b7280;
-  border-radius: 4px;
-}
-
-.manifest-display::-webkit-scrollbar-thumb:hover {
-  background: #9ca3af;
-}
-
 .mpd-info {
   margin-top: 20px;
 }
@@ -391,13 +392,165 @@ export default {
   overflow: hidden;
 }
 
-.mpd-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 12px;
+.view-toggle-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 4px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.view-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 80px;
+  justify-content: center;
+}
+
+.view-toggle-btn:hover {
+  background: #e2e8f0;
+  color: #374151;
+}
+
+.view-toggle-btn.active {
+  background: #3b82f6;
+  color: white;
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2);
+}
+
+.view-toggle-btn.active:hover {
+  background: #2563eb;
+}
+
+.view-icon {
+  font-size: 14px;
+}
+
+.view-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.view-content {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.xml-view-wrapper {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.xml-display {
+  font-size: 12px;
+  overflow: auto;
+  max-height: 400px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #1f2937;
+  color: #f9fafb;
+  padding: 16px;
+  margin: 0;
+  border: 1px solid #374151;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+  line-height: 1.5;
+}
+
+.xml-display::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.xml-display::-webkit-scrollbar-track {
+  background: #374151;
+  border-radius: 4px;
+}
+
+.xml-display::-webkit-scrollbar-thumb {
+  background: #6b7280;
+  border-radius: 4px;
+}
+
+.xml-display::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.mpd-table-wrapper {
+  overflow-x: auto;
+  overflow-y: visible;
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: white;
+  position: relative;
+  scroll-behavior: smooth;
+}
+
+.mpd-table-wrapper::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  background: linear-gradient(to left, rgba(255, 255, 255, 0.8), transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.mpd-table-wrapper:hover::after {
+  opacity: 1;
+}
+
+.mpd-table-wrapper::-webkit-scrollbar {
+  height: 8px;
+}
+
+.mpd-table-wrapper::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+.mpd-table-wrapper::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+.mpd-table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.mpd-table {
+  width: 100%;
+  min-width: 500px; /* Ensure minimum width for proper display */
+  border-collapse: collapse;
+  margin: 0;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .mpd-table th,
@@ -406,6 +559,22 @@ export default {
   padding: 12px 16px;
   text-align: left;
   vertical-align: top;
+  white-space: nowrap;
+  min-width: 120px;
+}
+
+.mpd-table th:first-child,
+.mpd-table td:first-child {
+  min-width: 180px;
+  font-weight: 600;
+}
+
+.mpd-table th:last-child,
+.mpd-table td:last-child {
+  min-width: 300px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 400px;
 }
 
 .mpd-table th {
@@ -467,15 +636,48 @@ export default {
     font-size: 13px;
   }
 
-  .manifest-display {
+  .view-toggle-btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    min-width: 70px;
+  }
+
+  .view-icon {
+    font-size: 13px;
+  }
+
+  .view-label {
     font-size: 11px;
-    max-height: 200px;
+  }
+
+  .xml-display {
+    font-size: 11px;
+    max-height: 300px;
+  }
+
+  .mpd-table-wrapper {
+    border-radius: 6px;
+  }
+
+  .mpd-table {
+    min-width: 450px;
   }
 
   .mpd-table th,
   .mpd-table td {
     padding: 8px 12px;
     font-size: 12px;
+  }
+
+  .mpd-table th:first-child,
+  .mpd-table td:first-child {
+    min-width: 150px;
+  }
+
+  .mpd-table th:last-child,
+  .mpd-table td:last-child {
+    min-width: 250px;
+    max-width: 300px;
   }
 }
 
@@ -507,18 +709,56 @@ export default {
     justify-content: center;
   }
 
-  .manifest-display {
-    max-height: 150px;
+  .view-toggle-buttons {
+    gap: 4px;
+    padding: 3px;
+  }
+
+  .view-toggle-btn {
+    padding: 6px 8px;
+    font-size: 11px;
+    min-width: 60px;
+    gap: 4px;
+  }
+
+  .view-icon {
+    font-size: 12px;
+  }
+
+  .view-label {
     font-size: 10px;
   }
 
+  .xml-display {
+    max-height: 200px;
+    font-size: 10px;
+    padding: 12px;
+  }
+
+  .mpd-table-wrapper {
+    border-radius: 4px;
+  }
+
   .mpd-table {
+    min-width: 400px;
     font-size: 11px;
   }
 
   .mpd-table th,
   .mpd-table td {
     padding: 6px 8px;
+    font-size: 11px;
+  }
+
+  .mpd-table th:first-child,
+  .mpd-table td:first-child {
+    min-width: 120px;
+  }
+
+  .mpd-table th:last-child,
+  .mpd-table td:last-child {
+    min-width: 200px;
+    max-width: 250px;
   }
 }
 

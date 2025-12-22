@@ -633,7 +633,7 @@ export class ManifestComparison {
         differences.push({
           type: "MISSING_PERIOD",
           tag: `Period (${semanticKey})`,
-          attribute: "",
+          attribute: "Period",
           sourceValue: "Present",
           ssaiValue: "Missing",
           solution:
@@ -694,7 +694,7 @@ export class ManifestComparison {
         differences.push({
           type: "MISSING_ADAPTATION_SET",
           tag: `AdaptationSet (${periodKey}:${semanticKey})`,
-          attribute: "",
+          attribute: "AdaptationSet",
           sourceValue: "Present",
           ssaiValue: "Missing",
           solution: "Add missing adaptation set to SSAI manifest",
