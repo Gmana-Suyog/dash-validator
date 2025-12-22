@@ -9,6 +9,9 @@ const SSAIMPDValidator = {
         severity: "VERY_HIGH",
         validate: () => sourceMPD.type === ssaiMPD.type,
         message: "MPD type mismatch (static/dynamic)",
+        attribute: "type",
+        expected: sourceMPD.type || "static",
+        actual: ssaiMPD.type || "Missing",
       },
       mediaPresentationDuration: {
         severity: "VERY_HIGH",
@@ -39,6 +42,9 @@ const SSAIMPDValidator = {
           return ssaiDurationResult.value >= sourceDurationResult.value;
         },
         message: "SSAI duration cannot be shorter than source",
+        attribute: "mediaPresentationDuration",
+        expected: sourceMPD.mediaPresentationDuration || "Present",
+        actual: ssaiMPD.mediaPresentationDuration || "Missing",
       },
       profiles: {
         severity: "HIGH",
@@ -51,6 +57,9 @@ const SSAIMPDValidator = {
           return sourceProfiles.every((p) => ssaiProfiles.includes(p));
         },
         message: "SSAI must support all source profiles",
+        attribute: "profiles",
+        expected: sourceMPD.profiles || "Source profiles",
+        actual: ssaiMPD.profiles || "Missing",
       },
       availabilityStartTime: {
         severity: "VERY_HIGH",
@@ -64,6 +73,9 @@ const SSAIMPDValidator = {
           return diff <= 1000;
         },
         message: "availabilityStartTime mismatch exceeds tolerance",
+        attribute: "availabilityStartTime",
+        expected: sourceMPD.availabilityStartTime || "Present",
+        actual: ssaiMPD.availabilityStartTime || "Missing",
       },
       minBufferTime: {
         severity: "HIGH",
@@ -90,6 +102,9 @@ const SSAIMPDValidator = {
           return ssaiBufferResult.value >= srcBufferResult.value;
         },
         message: "SSAI minBufferTime should not be less than source",
+        attribute: "minBufferTime",
+        expected: sourceMPD.minBufferTime || "Present",
+        actual: ssaiMPD.minBufferTime || "Missing",
       },
       publishTime: {
         severity: "MEDIUM",
@@ -100,6 +115,9 @@ const SSAIMPDValidator = {
           );
         },
         message: "SSAI publishTime should be >= source",
+        attribute: "publishTime",
+        expected: sourceMPD.publishTime || "Present",
+        actual: ssaiMPD.publishTime || "Missing",
       },
       minimumUpdatePeriod: {
         severity: "HIGH",
@@ -109,6 +127,9 @@ const SSAIMPDValidator = {
           return true;
         },
         message: "minimumUpdatePeriod differs (may be intentional)",
+        attribute: "minimumUpdatePeriod",
+        expected: sourceMPD.minimumUpdatePeriod || "Present",
+        actual: ssaiMPD.minimumUpdatePeriod || "Missing",
       },
       timeShiftBufferDepth: {
         severity: "HIGH",
@@ -136,6 +157,9 @@ const SSAIMPDValidator = {
           return ssaiDepthResult.value >= srcDepthResult.value * 0.9;
         },
         message: "timeShiftBufferDepth significantly reduced",
+        attribute: "timeShiftBufferDepth",
+        expected: sourceMPD.timeShiftBufferDepth || "Present",
+        actual: ssaiMPD.timeShiftBufferDepth || "Missing/Reduced",
       },
       suggestedPresentationDelay: {
         severity: "MEDIUM",
@@ -146,6 +170,9 @@ const SSAIMPDValidator = {
           );
         },
         message: "suggestedPresentationDelay missing for live stream",
+        attribute: "suggestedPresentationDelay",
+        expected: sourceMPD.suggestedPresentationDelay || "Present",
+        actual: ssaiMPD.suggestedPresentationDelay || "Missing",
       },
     };
 
@@ -164,6 +191,9 @@ const SSAIMPDValidator = {
           severity: "HIGH",
           message: "Source MPD missing UTCTiming for live stream",
           impact: "May cause clock sync issues",
+          attribute: "UTCTiming",
+          expected: "Present",
+          actual: "Missing",
         });
       }
       if (!ssaiUTC) {
@@ -171,6 +201,11 @@ const SSAIMPDValidator = {
           severity: "VERY_HIGH",
           message: "SSAI MPD missing UTCTiming - clock sync impossible",
           impact: "Will cause ad boundary errors and segment misalignment",
+          attribute: "UTCTiming",
+          expected: sourceUTC
+            ? `${sourceUTC.schemeIdUri} (${sourceUTC.value})`
+            : "Present",
+          actual: "Missing",
         });
       } else {
         const validSchemes = [
@@ -185,12 +220,18 @@ const SSAIMPDValidator = {
             severity: "HIGH",
             message: `Invalid UTCTiming scheme: ${ssaiUTC.schemeIdUri}`,
             validSchemes,
+            attribute: "UTCTiming.schemeIdUri",
+            expected: "Valid scheme (e.g., urn:mpeg:dash:utc:http-xsdate:2014)",
+            actual: ssaiUTC.schemeIdUri || "Missing",
           });
         }
         if (!ssaiUTC.value) {
           errors.push({
             severity: "VERY_HIGH",
             message: "UTCTiming missing value (time source URL)",
+            attribute: "UTCTiming.value",
+            expected: "Time source URL",
+            actual: "Missing",
           });
         }
       }
@@ -211,6 +252,9 @@ const SSAIMPDValidator = {
           message:
             "No manifest refresh mechanism (Location/PatchLocation/minimumUpdatePeriod)",
           impact: "Live playback will stall",
+          attribute: "refreshMechanism",
+          expected: "Location, PatchLocation, or minimumUpdatePeriod",
+          actual: "Missing",
         });
       }
       if (hasLocation) {
@@ -222,6 +266,9 @@ const SSAIMPDValidator = {
             errors.push({
               severity: "HIGH",
               message: `Invalid Location URL at index ${index}: ${loc}`,
+              attribute: `Location[${index}]`,
+              expected: "Valid URL",
+              actual: loc,
             });
           }
         });
@@ -235,6 +282,9 @@ const SSAIMPDValidator = {
             warnings.push({
               severity: "MEDIUM",
               message: `Invalid PatchLocation URL at index ${index}: ${patchLoc}`,
+              attribute: `PatchLocation[${index}]`,
+              expected: "Valid URL",
+              actual: patchLoc,
             });
           }
         });
@@ -253,6 +303,9 @@ const SSAIMPDValidator = {
         severity: "MEDIUM",
         message: "ServiceDescription removed by SSAI",
         note: "May affect low-latency playback expectations",
+        attribute: "ServiceDescription",
+        expected: "Present",
+        actual: "Missing",
       });
       return { errors, warnings };
     }
@@ -265,6 +318,9 @@ const SSAIMPDValidator = {
           message: "SSAI latency exceeds source maximum",
           sourceMax: srcLatency.max,
           ssaiTarget: ssaiLatency.target,
+          attribute: "ServiceDescription.Latency.target",
+          expected: `<= ${srcLatency.max}ms`,
+          actual: `${ssaiLatency.target}ms`,
         });
       }
       if (ssaiLatency.target > srcLatency.target * 1.5) {
@@ -277,6 +333,9 @@ const SSAIMPDValidator = {
             (ssaiLatency.target / srcLatency.target - 1) *
             100
           ).toFixed(0)}%`,
+          attribute: "ServiceDescription.Latency.target",
+          expected: `${srcLatency.target}ms`,
+          actual: `${ssaiLatency.target}ms`,
         });
       }
     }
@@ -292,6 +351,9 @@ const SSAIMPDValidator = {
           message: "SSAI restricted playback rate range",
           source: `${srcPlayback.min}-${srcPlayback.max}`,
           ssai: `${ssaiPlayback.min}-${ssaiPlayback.max}`,
+          attribute: "ServiceDescription.PlaybackRate",
+          expected: `${srcPlayback.min}-${srcPlayback.max}`,
+          actual: `${ssaiPlayback.min}-${ssaiPlayback.max}`,
         });
       }
     }
@@ -2581,6 +2643,9 @@ const SSAIMPDValidator = {
             severity: rule.severity,
             message: rule.message,
             rule: ruleName,
+            attribute: rule.attribute || ruleName,
+            expected: rule.expected || "Valid value",
+            actual: rule.actual || "Invalid/Missing",
           });
         }
       } catch (e) {
@@ -2588,6 +2653,9 @@ const SSAIMPDValidator = {
           severity: "HIGH",
           message: `Validation error for ${ruleName}: ${e.message}`,
           rule: ruleName,
+          attribute: ruleName,
+          expected: "Valid value",
+          actual: "Error during validation",
         });
       }
     });
