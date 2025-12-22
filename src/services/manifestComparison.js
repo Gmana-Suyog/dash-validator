@@ -69,14 +69,18 @@ export class ManifestComparison {
     return this.combineValidationResults(
       enhancedComparison,
       comprehensiveValidation,
-      semanticValidation
+      semanticValidation,
+      sourceManifest,
+      ssaiManifest
     );
   }
 
   async combineValidationResults(
     enhancedResults,
     comprehensivePromise,
-    semanticResults = []
+    semanticResults = [],
+    sourceManifest = null,
+    ssaiManifest = null
   ) {
     try {
       const comprehensiveResults = await comprehensivePromise;
@@ -117,6 +121,18 @@ export class ManifestComparison {
         const key = this.generateIssueKey(semanticResult);
         if (!issueMap.has(key)) {
           issueMap.set(key, semanticResult);
+        }
+      });
+
+      // Add uncovered attributes detection
+      const uncoveredItems = this.detectUncoveredAttributes(
+        sourceManifest,
+        ssaiManifest
+      );
+      uncoveredItems.forEach((uncoveredItem) => {
+        const key = this.generateIssueKey(uncoveredItem);
+        if (!issueMap.has(key)) {
+          issueMap.set(key, uncoveredItem);
         }
       });
 
@@ -2839,5 +2855,204 @@ export class ManifestComparison {
     }
 
     return issue.solution || "Review and fix the identified semantic issue";
+  }
+
+  // Detect attributes and elements that are not covered in our validation
+  detectUncoveredAttributes(sourceManifest, ssaiManifest) {
+    const uncoveredItems = [];
+
+    if (!sourceManifest || !ssaiManifest) return uncoveredItems;
+
+    try {
+      // Get all attributes from both manifests
+      const sourceAttributes = this.extractAllAttributes(sourceManifest);
+      const ssaiAttributes = this.extractAllAttributes(ssaiManifest);
+
+      // Known attributes that are covered in our validation
+      const knownAttributes = new Set([
+        "type",
+        "mediaPresentationDuration",
+        "minBufferTime",
+        "profiles",
+        "availabilityStartTime",
+        "publishTime",
+        "minimumUpdatePeriod",
+        "timeShiftBufferDepth",
+        "suggestedPresentationDelay",
+        "UTCTiming",
+        "id",
+        "start",
+        "duration",
+        "contentType",
+        "mimeType",
+        "codecs",
+        "lang",
+        "segmentAlignment",
+        "bandwidth",
+        "width",
+        "height",
+        "frameRate",
+        "audioSamplingRate",
+        "timescale",
+        "startNumber",
+        "initialization",
+        "media",
+        "schemeIdUri",
+        "value",
+        "pssh",
+        "default_KID",
+        "Role",
+        "Accessibility",
+        "Label",
+        "AudioChannelConfiguration",
+        "Location",
+        "PatchLocation",
+        "ServiceDescription",
+        "EssentialProperty",
+        "SupplementalProperty",
+        "EventStream",
+        "InbandEventStream",
+        "ContentProtection",
+        "SegmentTemplate",
+        "SegmentTimeline",
+        "SegmentBase",
+        "SegmentList",
+        "BaseURL",
+      ]);
+
+      // Check for uncovered attributes in source
+      sourceAttributes.forEach((attr) => {
+        if (!knownAttributes.has(attr.name)) {
+          uncoveredItems.push({
+            type: "UNCOVERED_ATTRIBUTE",
+            tag: attr.element || "Unknown",
+            attribute: attr.name,
+            sourceValue: attr.value || "Present",
+            ssaiValue:
+              ssaiAttributes.find((a) => a.name === attr.name)?.value ||
+              "Unknown",
+            solution:
+              "Review this attribute - it may not be covered in current validation logic",
+            severity: "NOT_FOUND",
+            message: `Attribute "${attr.name}" not covered in validation schema`,
+          });
+        }
+      });
+
+      // Check for uncovered attributes in SSAI
+      ssaiAttributes.forEach((attr) => {
+        if (
+          !knownAttributes.has(attr.name) &&
+          !sourceAttributes.find((a) => a.name === attr.name)
+        ) {
+          uncoveredItems.push({
+            type: "NEW_SSAI_ATTRIBUTE",
+            tag: attr.element || "Unknown",
+            attribute: attr.name,
+            sourceValue: "Not Present",
+            ssaiValue: attr.value || "Present",
+            solution:
+              "Review this new SSAI attribute - it may need validation coverage",
+            severity: "NOT_FOUND",
+            message: `New attribute "${attr.name}" found in SSAI manifest`,
+          });
+        }
+      });
+    } catch (error) {
+      console.warn("Error detecting uncovered attributes:", error);
+    }
+
+    return uncoveredItems;
+  }
+
+  // Extract all attributes from a manifest
+  extractAllAttributes(manifest) {
+    const attributes = [];
+
+    if (!manifest) return attributes;
+
+    try {
+      // If it's an XML document, traverse it
+      if (
+        manifest.nodeType === Node.DOCUMENT_NODE ||
+        manifest.nodeType === Node.ELEMENT_NODE
+      ) {
+        this.traverseXMLForAttributes(manifest, attributes);
+      } else if (typeof manifest === "object") {
+        // If it's a parsed object, extract attributes
+        this.traverseObjectForAttributes(manifest, attributes);
+      }
+    } catch (error) {
+      console.warn("Error extracting attributes:", error);
+    }
+
+    return attributes;
+  }
+
+  // Traverse XML nodes to find attributes
+  traverseXMLForAttributes(node, attributes, elementName = "") {
+    if (!node) return;
+
+    // Get element name
+    const currentElement = node.nodeName || elementName;
+
+    // Extract attributes from current node
+    if (node.attributes) {
+      for (let i = 0; i < node.attributes.length; i++) {
+        const attr = node.attributes[i];
+        attributes.push({
+          name: attr.name,
+          value: attr.value,
+          element: currentElement,
+        });
+      }
+    }
+
+    // Recursively traverse child nodes
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) {
+        const child = node.childNodes[i];
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          this.traverseXMLForAttributes(child, attributes);
+        }
+      }
+    }
+  }
+
+  // Traverse object to find attributes
+  traverseObjectForAttributes(obj, attributes, elementName = "MPD") {
+    if (!obj || typeof obj !== "object") return;
+
+    Object.keys(obj).forEach((key) => {
+      const value = obj[key];
+
+      // Skip certain keys that are not attributes
+      if (
+        [
+          "Period",
+          "AdaptationSet",
+          "Representation",
+          "SegmentTemplate",
+          "SegmentTimeline",
+        ].includes(key)
+      ) {
+        // These are elements, traverse them
+        if (Array.isArray(value)) {
+          value.forEach((item) =>
+            this.traverseObjectForAttributes(item, attributes, key)
+          );
+        } else if (typeof value === "object") {
+          this.traverseObjectForAttributes(value, attributes, key);
+        }
+      } else {
+        // This is likely an attribute
+        attributes.push({
+          name: key,
+          value:
+            typeof value === "object" ? JSON.stringify(value) : String(value),
+          element: elementName,
+        });
+      }
+    });
   }
 }

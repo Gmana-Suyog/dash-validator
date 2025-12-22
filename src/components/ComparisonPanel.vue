@@ -70,7 +70,14 @@
 
         <div class="severity-pills">
           <button
-            v-for="severity in ['VERY_HIGH', 'HIGH', 'MEDIUM', 'LOW', 'INFO']"
+            v-for="severity in [
+              'VERY_HIGH',
+              'HIGH',
+              'MEDIUM',
+              'LOW',
+              'INFO',
+              'NOT_FOUND',
+            ]"
             :key="severity"
             @click="toggleSeverityFilter(severity)"
             class="severity-pill"
@@ -101,11 +108,11 @@
           <tr
             v-for="(item, index) in filteredComparison"
             :key="index"
-            :class="getSeverityClass(item.severity)"
+            :class="getRowClass(item)"
           >
             <td data-label="Severity">
-              <span :class="getSeverityBadgeClass(item.severity)">
-                {{ item.severity || "MEDIUM" }}
+              <span :class="getBadgeClass(item)">
+                {{ getBadgeText(item) }}
               </span>
             </td>
             <td data-label="Issue Type">{{ item.type }}</td>
@@ -226,7 +233,14 @@ export default {
   },
   data() {
     return {
-      selectedSeverities: ["VERY_HIGH", "HIGH", "MEDIUM", "LOW", "INFO"],
+      selectedSeverities: [
+        "VERY_HIGH",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO",
+        "NOT_FOUND",
+      ],
     };
   },
   computed: {
@@ -235,6 +249,21 @@ export default {
 
       return this.comparison.filter((item) => {
         const severity = item.severity || "MEDIUM";
+
+        // Check if this is a "not found" item
+        const isNotFound = this.isNotFoundItem(item);
+
+        // If NOT_FOUND filter is selected and this is a not found item, include it
+        if (this.selectedSeverities.includes("NOT_FOUND") && isNotFound) {
+          return true;
+        }
+
+        // If NOT_FOUND filter is not selected and this is a not found item, exclude it
+        if (!this.selectedSeverities.includes("NOT_FOUND") && isNotFound) {
+          return false;
+        }
+
+        // For regular severity filtering
         return this.selectedSeverities.includes(severity);
       });
     },
@@ -245,11 +274,16 @@ export default {
         MEDIUM: 0,
         LOW: 0,
         INFO: 0,
+        NOT_FOUND: 0,
       };
 
       this.comparison.forEach((item) => {
         const severity = item.severity || "MEDIUM";
-        if (Object.prototype.hasOwnProperty.call(counts, severity)) {
+
+        // Check if this is a "not found" item
+        if (this.isNotFoundItem(item)) {
+          counts.NOT_FOUND++;
+        } else if (Object.prototype.hasOwnProperty.call(counts, severity)) {
           counts[severity]++;
         }
       });
@@ -271,9 +305,38 @@ export default {
           return "severity-low";
         case "INFO":
           return "severity-info";
+        case "NOT_FOUND":
+          return "severity-not-found";
         default:
           return "severity-medium";
       }
+    },
+    getRowClass(item) {
+      // Check if this is a "not found" item
+      if (this.isNotFoundItem(item)) {
+        return "severity-not-found";
+      }
+
+      // Use regular severity class
+      return this.getSeverityClass(item.severity);
+    },
+    getBadgeClass(item) {
+      // Check if this is a "not found" item
+      if (this.isNotFoundItem(item)) {
+        return "badge badge-not-found";
+      }
+
+      // Use regular severity badge class
+      return this.getSeverityBadgeClass(item.severity);
+    },
+    getBadgeText(item) {
+      // Check if this is a "not found" item
+      if (this.isNotFoundItem(item)) {
+        return "NOT FOUND";
+      }
+
+      // Use regular severity text
+      return item.severity || "MEDIUM";
     },
     getSeverityBadgeClass(severity) {
       switch (severity) {
@@ -287,6 +350,8 @@ export default {
           return "badge badge-info";
         case "INFO":
           return "badge badge-success";
+        case "NOT_FOUND":
+          return "badge badge-not-found";
         default:
           return "badge badge-warning";
       }
@@ -303,6 +368,8 @@ export default {
           return "pill-info";
         case "INFO":
           return "pill-success";
+        case "NOT_FOUND":
+          return "pill-not-found";
         default:
           return "pill-warning";
       }
@@ -319,6 +386,8 @@ export default {
           return "Low";
         case "INFO":
           return "Info";
+        case "NOT_FOUND":
+          return "Not Found";
         default:
           return "Medium";
       }
@@ -332,13 +401,115 @@ export default {
       }
     },
     selectAllSeverities() {
-      this.selectedSeverities = ["VERY_HIGH", "HIGH", "MEDIUM", "LOW", "INFO"];
+      this.selectedSeverities = [
+        "VERY_HIGH",
+        "HIGH",
+        "MEDIUM",
+        "LOW",
+        "INFO",
+        "NOT_FOUND",
+      ];
     },
     clearAllSeverities() {
       this.selectedSeverities = [];
     },
     isSeveritySelected(severity) {
       return this.selectedSeverities.includes(severity);
+    },
+    isNotFoundItem(item) {
+      if (!item) return false;
+
+      // Check for various patterns that indicate "not found" or uncovered attributes/nodes
+      const type = (item.type || "").toLowerCase();
+      const message = (item.message || "").toLowerCase();
+      const tag = (item.tag || "").toLowerCase();
+      const attribute = (item.attribute || "").toLowerCase();
+
+      // Patterns that indicate uncovered/not found items
+      const notFoundPatterns = [
+        // Missing elements/attributes that weren't covered in validation
+        type.includes("missing") &&
+          !type.includes("critical") &&
+          !type.includes("live") &&
+          !type.includes("period") &&
+          !type.includes("adaptation"),
+        type.includes("uncovered"),
+        type.includes("not_found"),
+        type.includes("unknown"),
+        type.includes("unvalidated"),
+        type.includes("new_attribute"),
+        type.includes("new_element"),
+
+        // Messages indicating uncovered content
+        message.includes("not covered"),
+        message.includes("uncovered"),
+        message.includes("unknown attribute"),
+        message.includes("unvalidated"),
+        message.includes("not found in validation"),
+        message.includes("new attribute"),
+        message.includes("new element"),
+        message.includes("not in validation schema"),
+
+        // Tags indicating new/unknown elements
+        tag.includes("unknown"),
+        tag.includes("uncovered"),
+        tag.includes("new_"),
+
+        // Attributes that are not in our standard validation set
+        attribute && !this.isKnownAttribute(attribute),
+
+        // Specific patterns for attributes/nodes not in our validation logic
+        (type.includes("attribute") || type.includes("element")) &&
+          (message.includes("not in validation") ||
+            message.includes("not covered")),
+
+        // Items with severity "NOT_FOUND" explicitly set
+        item.severity === "NOT_FOUND",
+      ];
+
+      return notFoundPatterns.some((pattern) => pattern);
+    },
+    isKnownAttribute(attribute) {
+      // List of attributes that are covered in our validation
+      const knownAttributes = [
+        "type",
+        "mediapresentationduration",
+        "minbuffertime",
+        "profiles",
+        "availabilitystarttime",
+        "publishtime",
+        "minimumupdateperiod",
+        "timeshiftbufferdepth",
+        "suggestedpresentationdelay",
+        "utctiming",
+        "id",
+        "start",
+        "duration",
+        "contenttype",
+        "mimetype",
+        "codecs",
+        "lang",
+        "segmentalignment",
+        "bandwidth",
+        "width",
+        "height",
+        "framerate",
+        "audiosamplingrate",
+        "timescale",
+        "startnumber",
+        "initialization",
+        "media",
+        "schemeiduri",
+        "value",
+        "pssh",
+        "default_kid",
+        "role",
+        "accessibility",
+        "label",
+        "audiochannelconfiguration",
+      ];
+
+      return knownAttributes.includes(attribute.toLowerCase());
     },
   },
 };
@@ -654,6 +825,15 @@ export default {
   border-color: #10b981;
 }
 
+.pill-not-found {
+  border-color: #6b7280;
+}
+
+.pill-not-found.pill-active {
+  background: linear-gradient(135deg, #6b7280, #4b5563);
+  border-color: #6b7280;
+}
+
 .pill-label {
   font-size: 14px;
   font-weight: 600;
@@ -760,6 +940,12 @@ export default {
   box-shadow: 0 2px 4px rgba(16, 185, 129, 0.1);
 }
 
+.severity-not-found {
+  background: linear-gradient(135deg, #f9fafb, #f3f4f6) !important;
+  border-left: 4px solid #6b7280;
+  box-shadow: 0 2px 4px rgba(107, 114, 128, 0.1);
+}
+
 /* Severity badges */
 .badge {
   display: inline-block;
@@ -795,6 +981,11 @@ export default {
 
 .badge-success {
   background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+}
+
+.badge-not-found {
+  background: linear-gradient(135deg, #6b7280, #4b5563);
   color: white;
 }
 

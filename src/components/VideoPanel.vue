@@ -43,7 +43,7 @@
               :class="['view-toggle-btn', { active: activeView === 'table' }]"
               title="Table View"
             >
-              <span class="view-icon">📊</span>
+              <span class="view-icon">🗂️</span>
               <span class="view-label">Table</span>
             </button>
             <button
