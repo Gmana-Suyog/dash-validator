@@ -4,42 +4,18 @@ const SSAIMPDValidator = {
     const warnings = [];
     const durationErrors = []; // Collect duration parsing errors
 
+    // Enhanced MPD type validation with incompatibility checks
+    this.validateMPDTypeAndCompatibility(sourceMPD, ssaiMPD, errors, warnings);
+
     const rules = {
-      type: {
-        severity: "VERY_HIGH",
-        validate: () => sourceMPD.type === ssaiMPD.type,
-        message: "MPD type mismatch (static/dynamic)",
-        attribute: "type",
-        expected: sourceMPD.type || "static",
-        actual: ssaiMPD.type || "Missing",
-      },
       mediaPresentationDuration: {
         severity: "VERY_HIGH",
         validate: () => {
-          if (!sourceMPD.mediaPresentationDuration) return true;
-          const sourceDurationResult = this.parseDuration(
-            sourceMPD.mediaPresentationDuration,
-            "source mediaPresentationDuration"
+          return this.validateMediaPresentationDuration(
+            sourceMPD,
+            ssaiMPD,
+            durationErrors
           );
-          const ssaiDurationResult = this.parseDuration(
-            ssaiMPD.mediaPresentationDuration,
-            "SSAI mediaPresentationDuration"
-          );
-
-          // Collect duration parsing errors
-          if (sourceDurationResult.error) {
-            durationErrors.push(sourceDurationResult.error);
-          }
-          if (ssaiDurationResult.error) {
-            durationErrors.push(ssaiDurationResult.error);
-          }
-
-          if (
-            sourceDurationResult.value === null ||
-            ssaiDurationResult.value === null
-          )
-            return true;
-          return ssaiDurationResult.value >= sourceDurationResult.value;
         },
         message: "SSAI duration cannot be shorter than source",
         attribute: "mediaPresentationDuration",
@@ -80,26 +56,11 @@ const SSAIMPDValidator = {
       minBufferTime: {
         severity: "HIGH",
         validate: () => {
-          const srcBufferResult = this.parseDuration(
-            sourceMPD.minBufferTime,
-            "source minBufferTime"
+          return this.validateBufferTimeWithTolerance(
+            sourceMPD,
+            ssaiMPD,
+            durationErrors
           );
-          const ssaiBufferResult = this.parseDuration(
-            ssaiMPD.minBufferTime,
-            "SSAI minBufferTime"
-          );
-
-          // Collect duration parsing errors
-          if (srcBufferResult.error) {
-            durationErrors.push(srcBufferResult.error);
-          }
-          if (ssaiBufferResult.error) {
-            durationErrors.push(ssaiBufferResult.error);
-          }
-
-          if (srcBufferResult.value === null || ssaiBufferResult.value === null)
-            return true;
-          return ssaiBufferResult.value >= srcBufferResult.value;
         },
         message: "SSAI minBufferTime should not be less than source",
         attribute: "minBufferTime",
@@ -401,8 +362,9 @@ const SSAIMPDValidator = {
       errors.push({
         severity: "VERY_HIGH",
         message: "Content duration mismatch",
-        expected: sourceDuration.toFixed(2),
-        actual: ssaiContentDuration.toFixed(2),
+        attribute: "mediaPresentationDuration",
+        expected: `${sourceDuration.toFixed(2)}s`,
+        actual: `${ssaiContentDuration.toFixed(2)}s`,
         difference: durationDiff.toFixed(2),
       });
     }
@@ -429,8 +391,9 @@ const SSAIMPDValidator = {
       errors.push({
         severity: "VERY_HIGH",
         message: "Missing periods in SSAI manifest",
-        expected: sourcePeriods.length,
-        actual: ssaiPeriods.length,
+        attribute: "Period",
+        expected: `${sourcePeriods.length} periods`,
+        actual: `${ssaiPeriods.length} periods`,
         impact: "Content periods may be missing, causing playback gaps",
       });
     }
@@ -448,6 +411,9 @@ const SSAIMPDValidator = {
           errors.push({
             severity: "HIGH",
             message: `Period ID missing in SSAI: ${sourcePeriod.id}`,
+            attribute: "Period.id",
+            expected: sourcePeriod.id,
+            actual: "Missing",
             periodId: sourcePeriod.id,
             impact: "Period identification may fail",
           });
@@ -534,6 +500,9 @@ const SSAIMPDValidator = {
       errors.push({
         severity: "HIGH",
         message: `Ad period missing duration`,
+        attribute: "Period.duration",
+        expected: "Present",
+        actual: "Missing",
         periodId: adPeriod.id || `ad_period_${index}`,
         impact: "Ad duration cannot be determined",
       });
@@ -544,6 +513,9 @@ const SSAIMPDValidator = {
       warnings.push({
         severity: "MEDIUM",
         message: `Ad period lacks clear identification`,
+        attribute: "Period.id",
+        expected: "Descriptive ad period ID",
+        actual: adPeriod.id || "Missing",
         periodId: adPeriod.id || `period_${index}`,
         note: "Consider using descriptive period IDs for ad periods",
       });
@@ -558,6 +530,11 @@ const SSAIMPDValidator = {
         errors.push({
           severity: "MEDIUM",
           message: `Incomplete AssetIdentifier in ad period`,
+          attribute: "AssetIdentifier",
+          expected: "schemeIdUri and value",
+          actual: `schemeIdUri: ${
+            adPeriod.AssetIdentifier.schemeIdUri || "Missing"
+          }, value: ${adPeriod.AssetIdentifier.value || "Missing"}`,
           periodId: adPeriod.id || `ad_period_${index}`,
           impact: "Ad tracking may be affected",
         });
@@ -600,6 +577,9 @@ const SSAIMPDValidator = {
           errors.push({
             severity: "MEDIUM",
             message: `EventStream ${scheme} missing in SSAI`,
+            attribute: "EventStream",
+            expected: scheme,
+            actual: "Missing",
             periodId: sourcePeriod.id,
           });
         }
@@ -726,13 +706,15 @@ const SSAIMPDValidator = {
         errors.push({
           severity: "VERY_HIGH",
           message: `Missing AdaptationSet in SSAI`,
-          periodId,
-          semanticKey,
-          details: `${
+          attribute: "AdaptationSet",
+          expected: `${
             srcSet.contentType || "unknown"
           } track with role=${this.getRoleString(srcSet.Role)}, lang=${
             srcSet.lang || "und"
           }`,
+          actual: "Missing",
+          periodId,
+          semanticKey,
         });
         return;
       }
@@ -748,9 +730,10 @@ const SSAIMPDValidator = {
         warnings.push({
           severity: "LOW",
           message: "Label mismatch",
-          periodId,
+          attribute: "Label",
           expected: srcSet.Label,
           actual: ssaiSet.Label,
+          periodId,
         });
       }
       if (
@@ -774,9 +757,10 @@ const SSAIMPDValidator = {
       errors.push({
         severity: "VERY_HIGH",
         message: `Missing AdaptationSets in SSAI period`,
+        attribute: "AdaptationSet",
+        expected: `${sourceArray.length} AdaptationSets`,
+        actual: `${ssaiArray.length} AdaptationSets`,
         periodId,
-        expected: sourceArray.length,
-        actual: ssaiArray.length,
         impact: "Media tracks missing, playback may fail",
       });
     }
@@ -792,6 +776,9 @@ const SSAIMPDValidator = {
           warnings.push({
             severity: "MEDIUM",
             message: `AdaptationSet ID missing in SSAI: ${srcAS.id}`,
+            attribute: "AdaptationSet.id",
+            expected: srcAS.id,
+            actual: "Missing",
             periodId,
             adaptationSetId: srcAS.id,
           });
@@ -803,6 +790,9 @@ const SSAIMPDValidator = {
         errors.push({
           severity: "HIGH",
           message: `AdaptationSet missing contentType and mimeType`,
+          attribute: "contentType/mimeType",
+          expected: "contentType or mimeType",
+          actual: "Missing",
           periodId,
           adaptationSetId: srcAS.id || `index_${index}`,
           impact: "Content type cannot be determined",
@@ -828,6 +818,9 @@ const SSAIMPDValidator = {
           warnings.push({
             severity: "MEDIUM",
             message: `Unusual mimeType: ${srcAS.mimeType}`,
+            attribute: "mimeType",
+            expected: "Standard MIME type",
+            actual: srcAS.mimeType,
             periodId,
             adaptationSetId: srcAS.id || `index_${index}`,
           });
@@ -839,6 +832,9 @@ const SSAIMPDValidator = {
         warnings.push({
           severity: "MEDIUM",
           message: `AdaptationSet missing codecs attribute`,
+          attribute: "codecs",
+          expected: "Present",
+          actual: "Missing",
           periodId,
           adaptationSetId: srcAS.id || `index_${index}`,
           note: "Codecs help players determine compatibility",
@@ -852,6 +848,9 @@ const SSAIMPDValidator = {
           warnings.push({
             severity: "MEDIUM",
             message: `Potentially invalid codec: ${srcAS.codecs}`,
+            attribute: "codecs",
+            expected: "Valid codec",
+            actual: srcAS.codecs,
             periodId,
             adaptationSetId: srcAS.id || `index_${index}`,
             details: codecValidation.reason,
@@ -864,6 +863,9 @@ const SSAIMPDValidator = {
         warnings.push({
           severity: "LOW",
           message: `Invalid language code: ${srcAS.lang}`,
+          attribute: "lang",
+          expected: "RFC 5646 format",
+          actual: srcAS.lang,
           periodId,
           adaptationSetId: srcAS.id || `index_${index}`,
           note: "Should follow RFC 5646 format",
@@ -875,6 +877,9 @@ const SSAIMPDValidator = {
         warnings.push({
           severity: "LOW",
           message: `AdaptationSet missing segmentAlignment attribute`,
+          attribute: "segmentAlignment",
+          expected: "Present",
+          actual: "Missing",
           periodId,
           adaptationSetId: srcAS.id || `index_${index}`,
           note: "Explicit segmentAlignment improves switching",
@@ -940,9 +945,10 @@ const SSAIMPDValidator = {
         errors.push({
           severity: "VERY_HIGH",
           message: `${attr} mismatch in AdaptationSet`,
-          periodId,
+          attribute: attr,
           expected: srcSet[attr],
           actual: ssaiSet[attr],
+          periodId,
         });
       }
     });
@@ -953,9 +959,10 @@ const SSAIMPDValidator = {
       errors.push({
         severity: "HIGH",
         message: "segmentAlignment mismatch",
-        periodId,
+        attribute: "segmentAlignment",
         expected: srcSet.segmentAlignment,
         actual: ssaiSet.segmentAlignment,
+        periodId,
       });
     }
   },
@@ -966,9 +973,10 @@ const SSAIMPDValidator = {
       errors.push({
         severity: "HIGH",
         message: "Role mismatch",
-        periodId,
+        attribute: "Role",
         expected: srcRoleValues,
         actual: ssaiRoleValues,
+        periodId,
       });
     }
   },
@@ -2678,6 +2686,14 @@ const SSAIMPDValidator = {
       results.errors.push(...liveSSAIValidation.errors);
       results.warnings.push(...liveSSAIValidation.warnings);
 
+      // Enhanced buffer time relationship validation
+      this.validateBufferTimeRelationships(
+        sourceMPD,
+        ssaiMPD,
+        results.errors,
+        results.warnings
+      );
+
       const utcResult = this.validateUTCTiming(sourceMPD, ssaiMPD);
       results.errors.push(...utcResult.errors);
       results.warnings.push(...utcResult.warnings);
@@ -2694,6 +2710,14 @@ const SSAIMPDValidator = {
       results.errors.push(...periodResult.errors);
       results.warnings.push(...periodResult.warnings);
       results.info.adPeriods = periodResult.info?.adPeriods || 0;
+
+      // Enhanced period continuity validation
+      this.validatePeriodContinuityEnhanced(
+        sourceMPD.Period,
+        ssaiMPD.Period,
+        results.errors,
+        results.warnings
+      );
       const sourcePeriods = Array.isArray(sourceMPD.Period)
         ? sourceMPD.Period
         : sourceMPD.Period
@@ -2711,6 +2735,9 @@ const SSAIMPDValidator = {
           results.errors.push({
             severity: "VERY_HIGH",
             message: `Cannot find matching SSAI period for source period`,
+            attribute: "Period",
+            expected: `Period with ID: ${sourcePeriod.id || "unknown"}`,
+            actual: "Missing",
             periodId: sourcePeriod.id,
           });
           return;
@@ -2727,6 +2754,14 @@ const SSAIMPDValidator = {
         );
         results.errors.push(...asResult.errors);
         results.warnings.push(...asResult.warnings);
+
+        // Enhanced AdaptationSet semantic validation
+        this.validateAdaptationSetSemantics(
+          sourceAS,
+          ssaiAS,
+          results.errors,
+          results.warnings
+        );
         const sourceASArray = Array.isArray(sourceAS)
           ? sourceAS
           : sourceAS
@@ -2770,6 +2805,19 @@ const SSAIMPDValidator = {
               );
               results.errors.push(...segResult.errors);
               results.warnings.push(...segResult.warnings);
+
+              // Enhanced SegmentBase semantic validation
+              if (srcTemplate.SegmentBase && ssaiTemplate.SegmentBase) {
+                this.validateSegmentBaseSemantics(
+                  srcTemplate.SegmentBase,
+                  ssaiTemplate.SegmentBase,
+                  `Period[${sourcePeriod.id}].Representation[${
+                    srcRep.id || "unknown"
+                  }]`,
+                  results.errors,
+                  results.warnings
+                );
+              }
             }
           });
 
@@ -2782,6 +2830,28 @@ const SSAIMPDValidator = {
           );
           results.errors.push(...cpResult.errors);
           results.warnings.push(...cpResult.warnings);
+
+          // Enhanced descriptor semantic validation
+          if (srcAS.EssentialProperty || srcAS.SupplementalProperty) {
+            this.validateDescriptorSemantics(
+              srcAS.EssentialProperty,
+              ssaiASMatched.EssentialProperty,
+              `Period[${sourcePeriod.id}].AdaptationSet[${
+                srcAS.id || "unknown"
+              }].EssentialProperty`,
+              results.errors,
+              results.warnings
+            );
+            this.validateDescriptorSemantics(
+              srcAS.SupplementalProperty,
+              ssaiASMatched.SupplementalProperty,
+              `Period[${sourcePeriod.id}].AdaptationSet[${
+                srcAS.id || "unknown"
+              }].SupplementalProperty`,
+              results.errors,
+              results.warnings
+            );
+          }
         });
       });
       results.summary = this.generateSummary(results);
@@ -3146,6 +3216,512 @@ const SSAIMPDValidator = {
       isValid: criticalIssues === 0,
       adPeriodsDetected: results.info.adPeriods || 0,
     };
+  },
+
+  // Enhanced MPD type validation with incompatibility checks
+  validateMPDTypeAndCompatibility(sourceMPD, ssaiMPD, errors, warnings) {
+    // Check if type is missing or unexpected
+    if (!sourceMPD.type && !ssaiMPD.type) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: "MPD type not specified, assuming static",
+        attribute: "type",
+        expected: "static or dynamic",
+        actual: "Missing",
+      });
+    } else if (!ssaiMPD.type) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: "SSAI MPD missing type attribute",
+        attribute: "type",
+        expected: sourceMPD.type || "static",
+        actual: "Missing",
+      });
+    } else if (sourceMPD.type !== ssaiMPD.type) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: "MPD type mismatch (static/dynamic)",
+        attribute: "type",
+        expected: sourceMPD.type || "static",
+        actual: ssaiMPD.type,
+      });
+    }
+
+    // Validate dynamic MPD incompatibilities
+    if (ssaiMPD.type === "dynamic") {
+      const requiredLiveAttrs = [
+        "availabilityStartTime",
+        "minimumUpdatePeriod",
+      ];
+      const missingAttrs = requiredLiveAttrs.filter((attr) => !ssaiMPD[attr]);
+
+      if (missingAttrs.length > 0) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `Dynamic MPD missing required live attributes: ${missingAttrs.join(
+            ", "
+          )}`,
+          attribute: "liveAttributes",
+          expected: requiredLiveAttrs.join(", "),
+          actual: `Missing: ${missingAttrs.join(", ")}`,
+        });
+      }
+
+      // Check for static-only attributes in dynamic MPD
+      if (ssaiMPD.mediaPresentationDuration && !this.isValidDynamicDuration()) {
+        warnings.push({
+          severity: "MEDIUM",
+          message:
+            "Dynamic MPD has mediaPresentationDuration - may indicate finite live stream",
+          attribute: "mediaPresentationDuration",
+          expected: "Optional for dynamic",
+          actual: ssaiMPD.mediaPresentationDuration,
+        });
+      }
+    }
+
+    // Validate static MPD incompatibilities
+    if (ssaiMPD.type === "static" || !ssaiMPD.type) {
+      const liveOnlyAttrs = [
+        "availabilityStartTime",
+        "minimumUpdatePeriod",
+        "timeShiftBufferDepth",
+      ];
+      const presentLiveAttrs = liveOnlyAttrs.filter((attr) => ssaiMPD[attr]);
+
+      if (presentLiveAttrs.length > 0) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Static MPD has live-only attributes: ${presentLiveAttrs.join(
+            ", "
+          )}`,
+          attribute: "staticIncompatibility",
+          expected: "No live attributes",
+          actual: `Present: ${presentLiveAttrs.join(", ")}`,
+        });
+      }
+
+      if (!ssaiMPD.mediaPresentationDuration) {
+        errors.push({
+          severity: "HIGH",
+          message: "Static MPD missing required mediaPresentationDuration",
+          attribute: "mediaPresentationDuration",
+          expected: "Present",
+          actual: "Missing",
+        });
+      }
+    }
+  },
+
+  // Enhanced media presentation duration validation
+  validateMediaPresentationDuration(sourceMPD, ssaiMPD, durationErrors) {
+    if (!sourceMPD.mediaPresentationDuration) return true;
+
+    const sourceDurationResult = this.parseDuration(
+      sourceMPD.mediaPresentationDuration,
+      "source mediaPresentationDuration"
+    );
+    const ssaiDurationResult = this.parseDuration(
+      ssaiMPD.mediaPresentationDuration,
+      "SSAI mediaPresentationDuration"
+    );
+
+    // Collect duration parsing errors
+    if (sourceDurationResult.error) {
+      durationErrors.push(sourceDurationResult.error);
+    }
+    if (ssaiDurationResult.error) {
+      durationErrors.push(ssaiDurationResult.error);
+    }
+
+    if (
+      sourceDurationResult.value === null ||
+      ssaiDurationResult.value === null
+    ) {
+      return true;
+    }
+
+    // Enhanced validation for dynamic MPDs
+    if (sourceMPD.type === "dynamic") {
+      // For dynamic MPDs, duration can be optional or represent finite live
+      if (ssaiDurationResult.value < sourceDurationResult.value) {
+        // Allow some tolerance for live streams
+        const tolerance = Math.max(sourceDurationResult.value * 0.01, 1); // 1% or 1 second
+        return (
+          Math.abs(sourceDurationResult.value - ssaiDurationResult.value) <=
+          tolerance
+        );
+      }
+      return true;
+    }
+
+    // For static MPDs, SSAI duration should not be shorter
+    return ssaiDurationResult.value >= sourceDurationResult.value;
+  },
+
+  // Enhanced buffer time validation with tolerance and stream-type awareness
+  validateBufferTimeWithTolerance(sourceMPD, ssaiMPD, durationErrors) {
+    const srcBufferResult = this.parseDuration(
+      sourceMPD.minBufferTime,
+      "source minBufferTime"
+    );
+    const ssaiBufferResult = this.parseDuration(
+      ssaiMPD.minBufferTime,
+      "SSAI minBufferTime"
+    );
+
+    // Collect duration parsing errors
+    if (srcBufferResult.error) {
+      durationErrors.push(srcBufferResult.error);
+    }
+    if (ssaiBufferResult.error) {
+      durationErrors.push(ssaiBufferResult.error);
+    }
+
+    if (srcBufferResult.value === null || ssaiBufferResult.value === null) {
+      return true;
+    }
+
+    // Stream-type aware validation
+    const isLive = sourceMPD.type === "dynamic";
+    const tolerance = isLive ? 0.1 : 0.05; // 100ms for live, 50ms for VOD
+
+    // For SSAI, buffer time can be increased for ad transitions
+    if (ssaiBufferResult.value >= srcBufferResult.value) {
+      return true; // Increase is always allowed
+    }
+
+    // Check if reduction is within tolerance
+    const reduction = srcBufferResult.value - ssaiBufferResult.value;
+    return reduction <= tolerance;
+  },
+
+  // Validate buffer time vs suggested presentation delay relationship
+  validateBufferTimeRelationships(sourceMPD, ssaiMPD, errors, warnings) {
+    const srcBuffer = this.parseDuration(
+      sourceMPD.minBufferTime,
+      "source minBufferTime"
+    );
+    const ssaiBuffer = this.parseDuration(
+      ssaiMPD.minBufferTime,
+      "SSAI minBufferTime"
+    );
+    const srcDelay = this.parseDuration(
+      sourceMPD.suggestedPresentationDelay,
+      "source suggestedPresentationDelay"
+    );
+    const ssaiDelay = this.parseDuration(
+      ssaiMPD.suggestedPresentationDelay,
+      "SSAI suggestedPresentationDelay"
+    );
+
+    // Validate minBufferTime vs suggestedPresentationDelay relationship
+    if (srcBuffer.value && srcDelay.value && srcDelay.value < srcBuffer.value) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: "Source suggestedPresentationDelay is less than minBufferTime",
+        attribute: "bufferTimeRelationship",
+        expected: `>= ${srcBuffer.value}s`,
+        actual: `${srcDelay.value}s`,
+      });
+    }
+
+    if (
+      ssaiBuffer.value &&
+      ssaiDelay.value &&
+      ssaiDelay.value < ssaiBuffer.value
+    ) {
+      errors.push({
+        severity: "HIGH",
+        message: "SSAI suggestedPresentationDelay is less than minBufferTime",
+        attribute: "bufferTimeRelationship",
+        expected: `>= ${ssaiBuffer.value}s`,
+        actual: `${ssaiDelay.value}s`,
+      });
+    }
+
+    // Validate timeShiftBufferDepth vs minimumUpdatePeriod (with explanation)
+    if (sourceMPD.type === "dynamic") {
+      const ssaiTSBD = this.parseDuration(
+        ssaiMPD.timeShiftBufferDepth,
+        "SSAI timeShiftBufferDepth"
+      );
+      const ssaiMUP = this.parseDuration(
+        ssaiMPD.minimumUpdatePeriod,
+        "SSAI minimumUpdatePeriod"
+      );
+
+      if (
+        ssaiTSBD.value &&
+        ssaiMUP.value &&
+        ssaiTSBD.value < ssaiMUP.value * 2
+      ) {
+        warnings.push({
+          severity: "LOW", // Downgraded as this is heuristic
+          message:
+            "timeShiftBufferDepth < 2x minimumUpdatePeriod (recommended practice, not spec requirement)",
+          attribute: "liveTimingHeuristic",
+          expected: `>= ${(ssaiMUP.value * 2).toFixed(1)}s (2x MUP)`,
+          actual: `${ssaiTSBD.value}s`,
+          note: "This is a best practice recommendation, not a strict specification requirement",
+        });
+      }
+    }
+  },
+
+  // Enhanced period continuity validation with defensive logic
+  validatePeriodContinuityEnhanced(
+    sourcePeriods,
+    ssaiPeriods,
+    errors,
+    warnings
+  ) {
+    const sourceArray = Array.isArray(sourcePeriods)
+      ? sourcePeriods
+      : sourcePeriods
+      ? [sourcePeriods]
+      : [];
+
+    let expectedStart = 0;
+    let hasGaps = false;
+    const tolerance = 0.001; // 1ms tolerance
+
+    sourceArray.forEach((period, index) => {
+      if (!period) return;
+
+      // Handle missing start time (allowed by spec)
+      let periodStart = expectedStart; // Default fallback
+      if (period.start) {
+        const startResult = this.parseDuration(
+          period.start,
+          `source period ${index} start`
+        );
+        if (startResult.value !== null) {
+          periodStart = startResult.value;
+        }
+      }
+
+      // Check continuity with tolerance
+      if (index > 0 && Math.abs(periodStart - expectedStart) > tolerance) {
+        hasGaps = true;
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Period ${index} continuity gap detected`,
+          attribute: `Period[${index}].start`,
+          expected: `${expectedStart.toFixed(3)}s`,
+          actual: `${periodStart.toFixed(3)}s`,
+          gap: `${Math.abs(periodStart - expectedStart).toFixed(3)}s`,
+        });
+      }
+
+      // Handle duration (last period can have no duration)
+      if (period.duration) {
+        const durationResult = this.parseDuration(
+          period.duration,
+          `source period ${index} duration`
+        );
+        if (durationResult.value !== null) {
+          expectedStart = periodStart + durationResult.value;
+        }
+      } else if (index < sourceArray.length - 1) {
+        // Missing duration on non-last period
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Period ${index} missing duration (not last period)`,
+          attribute: `Period[${index}].duration`,
+          expected: "Present",
+          actual: "Missing",
+        });
+      }
+    });
+
+    return !hasGaps;
+  },
+
+  // Validate AdaptationSet semantic attributes
+  validateAdaptationSetSemantics(sourceAS, ssaiAS, errors, warnings) {
+    const sourceArray = Array.isArray(sourceAS)
+      ? sourceAS
+      : sourceAS
+      ? [sourceAS]
+      : [];
+    const ssaiArray = Array.isArray(ssaiAS) ? ssaiAS : ssaiAS ? [ssaiAS] : [];
+
+    sourceArray.forEach((srcAS, index) => {
+      if (!srcAS) return;
+
+      const matchingSSAI = this.findMatchingAdaptationSet(srcAS, ssaiArray);
+      if (!matchingSSAI) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `AdaptationSet ${index} missing in SSAI`,
+          attribute: `AdaptationSet[${index}]`,
+          expected: this.getAdaptationSetSignature(srcAS),
+          actual: "Missing",
+        });
+        return;
+      }
+
+      // Validate critical semantic attributes
+      this.validateCriticalASAttributes(
+        srcAS,
+        matchingSSAI,
+        index,
+        errors,
+        warnings
+      );
+    });
+  },
+
+  // Validate critical AdaptationSet attributes
+  validateCriticalASAttributes(srcAS, ssaiAS, index, errors, warnings) {
+    const criticalAttrs = [
+      { name: "mimeType", severity: "VERY_HIGH" },
+      { name: "codecs", severity: "VERY_HIGH" },
+      { name: "lang", severity: "HIGH" },
+      { name: "contentType", severity: "HIGH" },
+    ];
+
+    criticalAttrs.forEach(({ name, severity }) => {
+      if (srcAS[name] && srcAS[name] !== ssaiAS[name]) {
+        const errorObj = {
+          severity,
+          message: `AdaptationSet ${name} mismatch`,
+          attribute: `AdaptationSet[${index}].${name}`,
+          expected: srcAS[name],
+          actual: ssaiAS[name] || "Missing",
+        };
+
+        if (severity === "VERY_HIGH") {
+          errors.push(errorObj);
+        } else {
+          warnings.push(errorObj);
+        }
+      }
+    });
+
+    // Validate codec compatibility
+    if (srcAS.codecs && ssaiAS.codecs) {
+      const srcCodecFamily = srcAS.codecs.split(".")[0];
+      const ssaiCodecFamily = ssaiAS.codecs.split(".")[0];
+
+      if (srcCodecFamily !== ssaiCodecFamily) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `Codec family mismatch in AdaptationSet ${index}`,
+          attribute: `AdaptationSet[${index}].codecFamily`,
+          expected: srcCodecFamily,
+          actual: ssaiCodecFamily,
+        });
+      }
+    }
+  },
+
+  // Validate SegmentBase semantic consistency
+  validateSegmentBaseSemantics(
+    sourceSegBase,
+    ssaiSegBase,
+    context,
+    errors,
+    warnings
+  ) {
+    if (!sourceSegBase || !ssaiSegBase) return;
+
+    // Validate timescale consistency
+    const srcTimescale = parseInt(sourceSegBase.timescale) || 1;
+    const ssaiTimescale = parseInt(ssaiSegBase.timescale) || 1;
+
+    if (srcTimescale !== ssaiTimescale) {
+      errors.push({
+        severity: "VERY_HIGH",
+        message: `SegmentBase timescale mismatch in ${context}`,
+        attribute: `${context}.SegmentBase.timescale`,
+        expected: srcTimescale.toString(),
+        actual: ssaiTimescale.toString(),
+      });
+    }
+
+    // Validate presentationTimeOffset
+    const srcPTO = parseInt(sourceSegBase.presentationTimeOffset) || 0;
+    const ssaiPTO = parseInt(ssaiSegBase.presentationTimeOffset) || 0;
+
+    if (srcPTO !== ssaiPTO) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: `SegmentBase presentationTimeOffset mismatch in ${context}`,
+        attribute: `${context}.SegmentBase.presentationTimeOffset`,
+        expected: srcPTO.toString(),
+        actual: ssaiPTO.toString(),
+      });
+    }
+  },
+
+  // Validate descriptor semantic meaning
+  validateDescriptorSemantics(sourceDesc, ssaiDesc, context, errors, warnings) {
+    if (!sourceDesc || !Array.isArray(sourceDesc)) return;
+
+    sourceDesc.forEach((srcDesc, index) => {
+      if (!srcDesc) return;
+
+      const matchingDesc = ssaiDesc?.find(
+        (d) => d && d.schemeIdUri === srcDesc.schemeIdUri
+      );
+
+      if (!matchingDesc) {
+        const severity = this.getDescriptorSeverity(srcDesc.schemeIdUri);
+        const errorObj = {
+          severity,
+          message: `Descriptor missing in SSAI: ${srcDesc.schemeIdUri}`,
+          attribute: `${context}.Descriptor[${index}]`,
+          expected: `${srcDesc.schemeIdUri}=${srcDesc.value}`,
+          actual: "Missing",
+        };
+
+        if (severity === "VERY_HIGH" || severity === "HIGH") {
+          errors.push(errorObj);
+        } else {
+          warnings.push(errorObj);
+        }
+      } else if (srcDesc.value !== matchingDesc.value) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Descriptor value mismatch: ${srcDesc.schemeIdUri}`,
+          attribute: `${context}.Descriptor[${index}].value`,
+          expected: srcDesc.value,
+          actual: matchingDesc.value,
+        });
+      }
+    });
+  },
+
+  // Helper methods
+  isValidDynamicDuration() {
+    // Dynamic MPD can have duration for finite live streams
+    return true; // This is actually valid
+  },
+
+  getAdaptationSetSignature(as) {
+    return `${as.contentType || "unknown"}:${as.mimeType || "unknown"}:${
+      as.lang || "und"
+    }`;
+  },
+
+  getDescriptorSeverity(schemeIdUri) {
+    if (!schemeIdUri) return "LOW";
+
+    const scheme = schemeIdUri.toLowerCase();
+
+    // EssentialProperty is critical
+    if (scheme.includes("essential")) return "VERY_HIGH";
+
+    // Accessibility is important
+    if (scheme.includes("accessibility")) return "HIGH";
+
+    // Role descriptors are important
+    if (scheme.includes("role")) return "HIGH";
+
+    // Others are medium priority
+    return "MEDIUM";
   },
 };
 export default SSAIMPDValidator;
