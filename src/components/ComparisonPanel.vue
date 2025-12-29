@@ -422,52 +422,78 @@ export default {
       // Check for various patterns that indicate "not found" or uncovered attributes/nodes
       const type = (item.type || "").toLowerCase();
       const message = (item.message || "").toLowerCase();
-      const tag = (item.tag || "").toLowerCase();
       const attribute = (item.attribute || "").toLowerCase();
 
-      // Patterns that indicate uncovered/not found items
-      const notFoundPatterns = [
-        // Missing elements/attributes that weren't covered in validation
-        type.includes("missing") &&
-          !type.includes("critical") &&
-          !type.includes("live") &&
-          !type.includes("period") &&
-          !type.includes("adaptation"),
-        type.includes("uncovered"),
-        type.includes("not_found"),
-        type.includes("unknown"),
-        type.includes("unvalidated"),
-        type.includes("new_attribute"),
-        type.includes("new_element"),
-
-        // Messages indicating uncovered content
-        message.includes("not covered"),
-        message.includes("uncovered"),
-        message.includes("unknown attribute"),
-        message.includes("unvalidated"),
-        message.includes("not found in validation"),
-        message.includes("new attribute"),
-        message.includes("new element"),
-        message.includes("not in validation schema"),
-
-        // Tags indicating new/unknown elements
-        tag.includes("unknown"),
-        tag.includes("uncovered"),
-        tag.includes("new_"),
-
-        // Attributes that are not in our standard validation set
-        attribute && !this.isKnownAttribute(attribute),
-
-        // Specific patterns for attributes/nodes not in our validation logic
-        (type.includes("attribute") || type.includes("element")) &&
-          (message.includes("not in validation") ||
-            message.includes("not covered")),
-
-        // Items with severity "NOT_FOUND" explicitly set
-        item.severity === "NOT_FOUND",
+      // Specific types that should be considered "not found" (uncovered attributes/elements)
+      const notFoundTypes = [
+        "uncovered_attribute",
+        "new_ssai_attribute",
+        "unknown_attribute",
+        "unvalidated_element",
+        "new_element",
+        "unknown_element",
       ];
 
-      return notFoundPatterns.some((pattern) => pattern);
+      // Check if this is explicitly a NOT_FOUND type
+      if (notFoundTypes.includes(type)) {
+        return true;
+      }
+
+      // Items with severity "NOT_FOUND" explicitly set (but not validation results)
+      if (item.severity === "NOT_FOUND" && notFoundTypes.includes(type)) {
+        return true;
+      }
+
+      // Messages that specifically indicate uncovered content (not validation failures)
+      const uncoveredMessages = [
+        "not covered in validation schema",
+        "attribute not covered in validation",
+        "element not covered in validation",
+        "new attribute found in ssai manifest",
+        "unknown attribute detected",
+        "not in validation schema",
+      ];
+
+      // Check for specific uncovered content messages
+      if (uncoveredMessages.some((pattern) => message.includes(pattern))) {
+        return true;
+      }
+
+      // Attributes that are not in our standard validation set (only for uncovered attribute types)
+      if (
+        type.includes("uncovered") &&
+        attribute &&
+        !this.isKnownAttribute(attribute)
+      ) {
+        return true;
+      }
+
+      // Do NOT categorize validation results as "not found"
+      // These are legitimate validation findings, not uncovered attributes
+      const validationResultTypes = [
+        "timeline_duration_mismatch",
+        "timeline_segment_count",
+        "cumulative_drift",
+        "timeline_start_drift",
+        "timeline_duration_drift",
+        "cumulative_timeline_drift",
+        "missing_period",
+        "missing_adaptation_set",
+        "missing_representation",
+        "attribute_mismatch",
+        "duration_mismatch",
+        "bandwidth_mismatch",
+        "codec_mismatch",
+        "drm_mismatch",
+        "segment_mismatch",
+      ];
+
+      // Explicitly exclude validation results from being "not found"
+      if (validationResultTypes.includes(type)) {
+        return false;
+      }
+
+      return false;
     },
     isKnownAttribute(attribute) {
       // List of attributes that are covered in our validation

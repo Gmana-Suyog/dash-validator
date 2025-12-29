@@ -141,6 +141,477 @@ export class ManifestService {
     return result;
   }
 
+  // Extract comprehensive MPD profile information
+  extractMPDProfile(xml) {
+    if (!xml) return {};
+
+    const profile = {
+      general: {},
+      video: [],
+      audio: [],
+      text: [],
+      drm: [],
+      streaming: {},
+      technical: {},
+    };
+
+    try {
+      const mpd = xml.querySelector("MPD");
+      if (!mpd) return profile;
+
+      // General MPD information
+      profile.general = {
+        type: mpd.getAttribute("type") || "static",
+        profiles: mpd.getAttribute("profiles") || "",
+        mediaPresentationDuration:
+          mpd.getAttribute("mediaPresentationDuration") || "",
+        minBufferTime: mpd.getAttribute("minBufferTime") || "",
+        maxSegmentDuration: mpd.getAttribute("maxSegmentDuration") || "",
+        availabilityStartTime: mpd.getAttribute("availabilityStartTime") || "",
+        publishTime: mpd.getAttribute("publishTime") || "",
+        minimumUpdatePeriod: mpd.getAttribute("minimumUpdatePeriod") || "",
+        timeShiftBufferDepth: mpd.getAttribute("timeShiftBufferDepth") || "",
+        suggestedPresentationDelay:
+          mpd.getAttribute("suggestedPresentationDelay") || "",
+      };
+
+      // Streaming information
+      profile.streaming = {
+        isLive: mpd.getAttribute("type") === "dynamic",
+        hasUTCTiming: !!xml.querySelector("UTCTiming"),
+        hasLocation: !!xml.querySelector("Location"),
+        hasPatchLocation: !!xml.querySelector("PatchLocation"),
+        hasServiceDescription: !!xml.querySelector("ServiceDescription"),
+      };
+
+      // Extract profiles from all periods
+      const periods = xml.querySelectorAll("Period");
+      periods.forEach((period, periodIndex) => {
+        const periodId = period.getAttribute("id") || `period_${periodIndex}`;
+
+        // Extract AdaptationSet profiles
+        const adaptationSets = period.querySelectorAll("AdaptationSet");
+        adaptationSets.forEach((as, asIndex) => {
+          const asId = as.getAttribute("id") || `as_${asIndex}`;
+          const contentType =
+            as.getAttribute("contentType") ||
+            this.inferContentTypeFromMimeType(as.getAttribute("mimeType"));
+
+          // Extract Representation profiles
+          const representations = as.querySelectorAll("Representation");
+          representations.forEach((rep, repIndex) => {
+            const repProfile = this.extractRepresentationProfile(
+              rep,
+              as,
+              period,
+              {
+                periodId,
+                periodIndex,
+                asId,
+                asIndex,
+                repIndex,
+                contentType,
+              }
+            );
+
+            // Categorize by content type
+            if (
+              contentType === "video" ||
+              repProfile.mimeType?.includes("video")
+            ) {
+              profile.video.push(repProfile);
+            } else if (
+              contentType === "audio" ||
+              repProfile.mimeType?.includes("audio")
+            ) {
+              profile.audio.push(repProfile);
+            } else if (
+              contentType === "text" ||
+              repProfile.mimeType?.includes("text") ||
+              repProfile.mimeType?.includes("application")
+            ) {
+              profile.text.push(repProfile);
+            }
+          });
+
+          // Extract DRM information
+          const drmInfo = this.extractDRMProfile(as);
+          if (drmInfo.length > 0) {
+            profile.drm.push(
+              ...drmInfo.map((drm) => ({
+                ...drm,
+                periodId,
+                asId,
+                contentType,
+              }))
+            );
+          }
+        });
+      });
+
+      // Technical information
+      profile.technical = {
+        totalPeriods: periods.length,
+        totalVideoTracks: profile.video.length,
+        totalAudioTracks: profile.audio.length,
+        totalTextTracks: profile.text.length,
+        totalDRMSystems: profile.drm.length,
+        hasMultiplePeriods: periods.length > 1,
+        hasMultipleVideoQualities: profile.video.length > 1,
+        hasMultipleAudioLanguages:
+          new Set(profile.audio.map((a) => a.lang).filter(Boolean)).size > 1,
+        videoResolutions: [
+          ...new Set(
+            profile.video
+              .map((v) => `${v.width}x${v.height}`)
+              .filter((r) => r !== "x")
+          ),
+        ],
+        videoBitrates: profile.video
+          .map((v) => v.bandwidth)
+          .filter(Boolean)
+          .sort((a, b) => b - a),
+        audioBitrates: profile.audio
+          .map((a) => a.bandwidth)
+          .filter(Boolean)
+          .sort((a, b) => b - a),
+        videoCodecs: [
+          ...new Set(profile.video.map((v) => v.codecs).filter(Boolean)),
+        ],
+        audioCodecs: [
+          ...new Set(profile.audio.map((a) => a.codecs).filter(Boolean)),
+        ],
+        videoFrameRates: [
+          ...new Set(profile.video.map((v) => v.frameRate).filter(Boolean)),
+        ],
+        audioSampleRates: [
+          ...new Set(
+            profile.audio.map((a) => a.audioSamplingRate).filter(Boolean)
+          ),
+        ],
+      };
+    } catch (error) {
+      console.warn("Error extracting MPD profile:", error);
+    }
+
+    return profile;
+  }
+
+  // Extract detailed representation profile
+  extractRepresentationProfile(representation, adaptationSet, period, context) {
+    const profile = {
+      // Context information
+      periodId: context.periodId,
+      periodIndex: context.periodIndex,
+      adaptationSetId: context.asId,
+      adaptationSetIndex: context.asIndex,
+      representationIndex: context.repIndex,
+      contentType: context.contentType,
+
+      // Basic attributes
+      id: representation.getAttribute("id") || `rep_${context.repIndex}`,
+      bandwidth: this.parseNumericAttribute(
+        representation.getAttribute("bandwidth")
+      ),
+      width: this.parseNumericAttribute(
+        representation.getAttribute("width") ||
+          adaptationSet.getAttribute("width")
+      ),
+      height: this.parseNumericAttribute(
+        representation.getAttribute("height") ||
+          adaptationSet.getAttribute("height")
+      ),
+      frameRate:
+        representation.getAttribute("frameRate") ||
+        adaptationSet.getAttribute("frameRate") ||
+        "",
+      sar:
+        representation.getAttribute("sar") ||
+        adaptationSet.getAttribute("sar") ||
+        "",
+      audioSamplingRate: this.parseNumericAttribute(
+        representation.getAttribute("audioSamplingRate") ||
+          adaptationSet.getAttribute("audioSamplingRate")
+      ),
+      mimeType:
+        representation.getAttribute("mimeType") ||
+        adaptationSet.getAttribute("mimeType") ||
+        "",
+      codecs:
+        representation.getAttribute("codecs") ||
+        adaptationSet.getAttribute("codecs") ||
+        "",
+      startWithSAP: this.parseNumericAttribute(
+        representation.getAttribute("startWithSAP") ||
+          adaptationSet.getAttribute("startWithSAP")
+      ),
+      maxPlayoutRate: this.parseNumericAttribute(
+        representation.getAttribute("maxPlayoutRate")
+      ),
+      codingDependency:
+        representation.getAttribute("codingDependency") === "true",
+      scanType: representation.getAttribute("scanType") || "",
+
+      // AdaptationSet inherited attributes
+      lang: adaptationSet.getAttribute("lang") || "",
+      label: adaptationSet.getAttribute("Label") || "",
+      group: this.parseNumericAttribute(adaptationSet.getAttribute("group")),
+      par: adaptationSet.getAttribute("par") || "",
+      segmentAlignment:
+        adaptationSet.getAttribute("segmentAlignment") === "true",
+      subsegmentAlignment:
+        adaptationSet.getAttribute("subsegmentAlignment") === "true",
+      bitstreamSwitching:
+        (representation.getAttribute("bitstreamSwitching") ||
+          adaptationSet.getAttribute("bitstreamSwitching")) === "true",
+
+      // Quality metrics
+      qualityRanking: this.calculateQualityRanking(
+        representation,
+        adaptationSet,
+        context.contentType
+      ),
+
+      // Segment information
+      segmentInfo: this.extractSegmentInfo(representation, adaptationSet),
+
+      // Role and accessibility
+      roles: this.extractDescriptorValues(adaptationSet, "Role"),
+      accessibility: this.extractDescriptorValues(
+        adaptationSet,
+        "Accessibility"
+      ),
+
+      // Audio channel configuration
+      audioChannelConfiguration: this.extractAudioChannelConfig(
+        representation,
+        adaptationSet
+      ),
+
+      // DRM information
+      hasContentProtection: !!(
+        representation.querySelector("ContentProtection") ||
+        adaptationSet.querySelector("ContentProtection")
+      ),
+
+      // BaseURL information
+      baseURL:
+        this.extractBaseURL(representation) ||
+        this.extractBaseURL(adaptationSet) ||
+        this.extractBaseURL(period),
+
+      // Essential and supplemental properties
+      essentialProperties: this.extractDescriptorValues(
+        representation,
+        "EssentialProperty"
+      ).concat(
+        this.extractDescriptorValues(adaptationSet, "EssentialProperty")
+      ),
+      supplementalProperties: this.extractDescriptorValues(
+        representation,
+        "SupplementalProperty"
+      ).concat(
+        this.extractDescriptorValues(adaptationSet, "SupplementalProperty")
+      ),
+    };
+
+    return profile;
+  }
+
+  // Extract DRM profile information
+  extractDRMProfile(element) {
+    const drmSystems = [];
+    const contentProtections = element.querySelectorAll("ContentProtection");
+
+    contentProtections.forEach((cp, index) => {
+      const schemeIdUri = cp.getAttribute("schemeIdUri") || "";
+      const value = cp.getAttribute("value") || "";
+      const defaultKID =
+        cp.getAttribute("cenc:default_KID") ||
+        cp.getAttribute("default_KID") ||
+        "";
+
+      const drmSystem = {
+        index,
+        schemeIdUri,
+        value,
+        defaultKID,
+        systemName: this.identifyDRMSystem(schemeIdUri),
+        hasLicenseURL: !!cp.querySelector("*"),
+        elements: {},
+      };
+
+      // Extract DRM-specific elements
+      const drmElements = cp.children;
+      for (let i = 0; i < drmElements.length; i++) {
+        const elem = drmElements[i];
+        const tagName = elem.tagName || elem.localName || elem.nodeName;
+        drmSystem.elements[tagName] = elem.textContent || "";
+      }
+
+      drmSystems.push(drmSystem);
+    });
+
+    return drmSystems;
+  }
+
+  // Helper methods for profile extraction
+  parseNumericAttribute(value) {
+    if (!value) return null;
+    const parsed = parseFloat(value);
+    return isNaN(parsed) ? null : parsed;
+  }
+
+  inferContentTypeFromMimeType(mimeType) {
+    if (!mimeType) return "unknown";
+    if (mimeType.includes("video")) return "video";
+    if (mimeType.includes("audio")) return "audio";
+    if (mimeType.includes("text") || mimeType.includes("application"))
+      return "text";
+    return "unknown";
+  }
+
+  calculateQualityRanking(representation, adaptationSet, contentType) {
+    const bandwidth =
+      this.parseNumericAttribute(representation.getAttribute("bandwidth")) || 0;
+    const width =
+      this.parseNumericAttribute(
+        representation.getAttribute("width") ||
+          adaptationSet.getAttribute("width")
+      ) || 0;
+    const height =
+      this.parseNumericAttribute(
+        representation.getAttribute("height") ||
+          adaptationSet.getAttribute("height")
+      ) || 0;
+
+    if (contentType === "video") {
+      // Video quality ranking based on resolution and bandwidth
+      const pixelCount = width * height;
+      return Math.round((pixelCount / 1000000) * 10 + bandwidth / 1000000); // Rough quality score
+    } else if (contentType === "audio") {
+      // Audio quality ranking based on bandwidth and sample rate
+      const sampleRate =
+        this.parseNumericAttribute(
+          representation.getAttribute("audioSamplingRate") ||
+            adaptationSet.getAttribute("audioSamplingRate")
+        ) || 0;
+      return Math.round(bandwidth / 1000 + sampleRate / 1000); // Rough quality score
+    }
+
+    return bandwidth / 1000; // Default to bandwidth-based ranking
+  }
+
+  extractSegmentInfo(representation, adaptationSet) {
+    const segmentTemplate =
+      representation.querySelector("SegmentTemplate") ||
+      adaptationSet.querySelector("SegmentTemplate");
+    const segmentBase =
+      representation.querySelector("SegmentBase") ||
+      adaptationSet.querySelector("SegmentBase");
+    const segmentList =
+      representation.querySelector("SegmentList") ||
+      adaptationSet.querySelector("SegmentList");
+
+    const info = {
+      type: "unknown",
+      timescale: null,
+      duration: null,
+      startNumber: null,
+      presentationTimeOffset: null,
+      initialization: "",
+      media: "",
+    };
+
+    if (segmentTemplate) {
+      info.type = "template";
+      info.timescale = this.parseNumericAttribute(
+        segmentTemplate.getAttribute("timescale")
+      );
+      info.duration = this.parseNumericAttribute(
+        segmentTemplate.getAttribute("duration")
+      );
+      info.startNumber = this.parseNumericAttribute(
+        segmentTemplate.getAttribute("startNumber")
+      );
+      info.presentationTimeOffset = this.parseNumericAttribute(
+        segmentTemplate.getAttribute("presentationTimeOffset")
+      );
+      info.initialization =
+        segmentTemplate.getAttribute("initialization") || "";
+      info.media = segmentTemplate.getAttribute("media") || "";
+      info.hasSegmentTimeline =
+        !!segmentTemplate.querySelector("SegmentTimeline");
+    } else if (segmentBase) {
+      info.type = "base";
+      info.timescale = this.parseNumericAttribute(
+        segmentBase.getAttribute("timescale")
+      );
+      info.presentationTimeOffset = this.parseNumericAttribute(
+        segmentBase.getAttribute("presentationTimeOffset")
+      );
+      info.initialization = segmentBase.getAttribute("initialization") || "";
+    } else if (segmentList) {
+      info.type = "list";
+      info.timescale = this.parseNumericAttribute(
+        segmentList.getAttribute("timescale")
+      );
+      info.duration = this.parseNumericAttribute(
+        segmentList.getAttribute("duration")
+      );
+      info.startNumber = this.parseNumericAttribute(
+        segmentList.getAttribute("startNumber")
+      );
+      info.presentationTimeOffset = this.parseNumericAttribute(
+        segmentList.getAttribute("presentationTimeOffset")
+      );
+    }
+
+    return info;
+  }
+
+  extractDescriptorValues(element, descriptorName) {
+    const descriptors = element.querySelectorAll(descriptorName);
+    return Array.from(descriptors).map((desc) => ({
+      schemeIdUri: desc.getAttribute("schemeIdUri") || "",
+      value: desc.getAttribute("value") || "",
+    }));
+  }
+
+  extractAudioChannelConfig(representation, adaptationSet) {
+    const config =
+      representation.querySelector("AudioChannelConfiguration") ||
+      adaptationSet.querySelector("AudioChannelConfiguration");
+
+    if (config) {
+      return {
+        schemeIdUri: config.getAttribute("schemeIdUri") || "",
+        value: config.getAttribute("value") || "",
+      };
+    }
+
+    return null;
+  }
+
+  extractBaseURL(element) {
+    const baseURL = element.querySelector("BaseURL");
+    return baseURL ? baseURL.textContent || "" : "";
+  }
+
+  identifyDRMSystem(schemeIdUri) {
+    if (!schemeIdUri) return "Unknown";
+
+    const drmMap = {
+      "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed": "Widevine",
+      "urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95": "PlayReady",
+      "urn:uuid:94ce86fb-07ff-4f43-adb8-93d2fa968ca2": "FairPlay",
+      "urn:mpeg:dash:mp4protection:2011": "Common Encryption",
+      "urn:uuid:1077efec-c0b2-4d02-ace3-3c1e52e2fb4b": "ClearKey",
+    };
+
+    return drmMap[schemeIdUri] || "Custom DRM";
+  }
+
   // Enhanced method to extract all attributes with proper data typing
   extractAllAttributes(element, knownAttributes = {}) {
     const result = {};
@@ -262,7 +733,7 @@ export class ManifestService {
     return result;
   }
 
-  // Enhanced parse ISO 8601 duration to seconds with fractional support
+  // Enhanced parse ISO 8601 duration to seconds with comprehensive format support
   parseDurationToSeconds(duration) {
     if (!duration || typeof duration !== "string") return null;
 
@@ -271,35 +742,64 @@ export class ManifestService {
       return parseFloat(duration);
     }
 
-    // Enhanced ISO 8601 duration format parsing with fractional support
-    // Supports: PT1H30M45S, PT0.5H, PT30.5M, PT45.123S
-    const regex =
+    // Comprehensive ISO 8601 duration format parsing
+    // Supports all valid formats: PT1H30M45S, PT3599S, PT16M40S, PT0.5H, PT30.5M, PT45.123S
+
+    // Primary regex for standard PT format
+    const primaryRegex =
       /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
-    const matches = duration.match(regex);
+    const primaryMatches = duration.match(primaryRegex);
 
-    if (!matches) {
-      // Try alternative formats for edge cases
-      const altRegex =
-        /^P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
-      const altMatches = duration.match(altRegex);
-
-      if (altMatches) {
-        const days = parseFloat(altMatches[1] || 0);
-        const hours = parseFloat(altMatches[2] || 0);
-        const minutes = parseFloat(altMatches[3] || 0);
-        const seconds = parseFloat(altMatches[4] || 0);
-        return days * 86400 + hours * 3600 + minutes * 60 + seconds;
-      }
-
-      console.warn(`Failed to parse duration: ${duration}`);
-      return null;
+    if (primaryMatches) {
+      const hours = parseFloat(primaryMatches[1] || 0);
+      const minutes = parseFloat(primaryMatches[2] || 0);
+      const seconds = parseFloat(primaryMatches[3] || 0);
+      return hours * 3600 + minutes * 60 + seconds;
     }
 
-    const hours = parseFloat(matches[1] || 0);
-    const minutes = parseFloat(matches[2] || 0);
-    const seconds = parseFloat(matches[3] || 0);
+    // Extended regex for formats with days (P1DT1H30M45S)
+    const extendedRegex =
+      /^P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+    const extendedMatches = duration.match(extendedRegex);
 
-    return hours * 3600 + minutes * 60 + seconds;
+    if (extendedMatches) {
+      const days = parseFloat(extendedMatches[1] || 0);
+      const hours = parseFloat(extendedMatches[2] || 0);
+      const minutes = parseFloat(extendedMatches[3] || 0);
+      const seconds = parseFloat(extendedMatches[4] || 0);
+      return days * 86400 + hours * 3600 + minutes * 60 + seconds;
+    }
+
+    // Handle edge cases for malformed but parseable durations
+    // Some encoders produce PT3599.000S instead of PT59M59S
+    const edgeCaseRegex = /^PT(\d+(?:\.\d+)?)S$/;
+    const edgeCaseMatches = duration.match(edgeCaseRegex);
+
+    if (edgeCaseMatches) {
+      return parseFloat(edgeCaseMatches[1]);
+    }
+
+    // Handle minutes-only format: PT16M40S should be equivalent to PT1000S
+    const minutesOnlyRegex = /^PT(\d+(?:\.\d+)?)M(?:(\d+(?:\.\d+)?)S)?$/;
+    const minutesOnlyMatches = duration.match(minutesOnlyRegex);
+
+    if (minutesOnlyMatches) {
+      const minutes = parseFloat(minutesOnlyMatches[1] || 0);
+      const seconds = parseFloat(minutesOnlyMatches[2] || 0);
+      return minutes * 60 + seconds;
+    }
+
+    // Handle hours-only format: PT1H should be equivalent to PT3600S
+    const hoursOnlyRegex = /^PT(\d+(?:\.\d+)?)H$/;
+    const hoursOnlyMatches = duration.match(hoursOnlyRegex);
+
+    if (hoursOnlyMatches) {
+      const hours = parseFloat(hoursOnlyMatches[1]);
+      return hours * 3600;
+    }
+
+    console.warn(`Failed to parse duration: ${duration} - unsupported format`);
+    return null;
   }
 
   // Resolve relative URLs to absolute URLs
@@ -1095,8 +1595,11 @@ export class ManifestService {
         "",
     };
 
-    // Enhanced namespace-aware DRM element extraction
-    const drmElements = [
+    // Dynamic DRM element extraction - discover namespaces automatically
+    const drmElementMap = this.discoverDRMElements(contentProtection);
+
+    // Enhanced namespace-aware DRM element extraction with dynamic discovery
+    const knownDrmElements = [
       // PSSH data (Common Encryption)
       { names: ["cenc:pssh", "pssh"], property: "pssh" },
       // Microsoft PlayReady
@@ -1116,32 +1619,26 @@ export class ManifestService {
       { names: ["clearkey:laurl", "ck:laurl"], property: "clearkey" },
     ];
 
-    drmElements.forEach(({ names, property }) => {
+    // Process known DRM elements
+    knownDrmElements.forEach(({ names, property }) => {
       let element = null;
 
       // Try each namespace variant
       for (const name of names) {
-        element = contentProtection.querySelector(name.replace(":", "\\:"));
-        if (element) break;
-
-        // Try without namespace prefix
-        const localName = name.split(":").pop();
-        element = contentProtection.querySelector(localName);
-        if (element) break;
-
-        // Try with wildcard namespace
-        element = contentProtection.querySelector(`[*|${localName}]`);
-        if (element) break;
-
-        // Try with localName attribute
-        element = contentProtection.querySelector(
-          `*[localName='${localName}']`
-        );
+        element = this.findElementByName(contentProtection, name);
         if (element) break;
       }
 
       if (element) {
         cp[property] = element.textContent || "";
+      }
+    });
+
+    // Add dynamically discovered elements
+    Object.entries(drmElementMap).forEach(([elementName, elementValue]) => {
+      const normalizedName = this.normalizeDRMElementName(elementName);
+      if (!cp[normalizedName]) {
+        cp[normalizedName] = elementValue;
       }
     });
 
@@ -1159,6 +1656,94 @@ export class ManifestService {
     Object.assign(cp, additionalAttrs);
 
     return cp;
+  }
+
+  // Dynamic DRM element discovery method
+  discoverDRMElements(contentProtection) {
+    const drmElements = {};
+
+    // Get all child elements
+    const children = contentProtection.children || [];
+
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const tagName = child.tagName || child.localName || child.nodeName;
+      const textContent = child.textContent || "";
+
+      if (tagName && textContent.trim()) {
+        // Store both prefixed and local names
+        drmElements[tagName] = textContent.trim();
+
+        // Also store local name if different
+        const localName = child.localName || tagName.split(":").pop();
+        if (localName !== tagName) {
+          drmElements[localName] = textContent.trim();
+        }
+      }
+    }
+
+    return drmElements;
+  }
+
+  // Enhanced element finding with multiple namespace strategies
+  findElementByName(parent, elementName) {
+    // Strategy 1: Direct querySelector with escaped colon
+    try {
+      const escaped = elementName.replace(":", "\\:");
+      let element = parent.querySelector(escaped);
+      if (element) return element;
+    } catch (e) {
+      // Ignore querySelector errors
+    }
+
+    // Strategy 2: Try without namespace prefix
+    const localName = elementName.split(":").pop();
+    let element = parent.querySelector(localName);
+    if (element) return element;
+
+    // Strategy 3: Manual traversal for namespace-aware search
+    const children = parent.children || [];
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const childTagName = child.tagName || child.localName || child.nodeName;
+
+      // Check exact match
+      if (childTagName === elementName) return child;
+
+      // Check local name match
+      const childLocalName = child.localName || childTagName.split(":").pop();
+      if (childLocalName === localName) return child;
+    }
+
+    // Strategy 4: Try with wildcard namespace using getElementsByTagNameNS
+    try {
+      if (parent.getElementsByTagNameNS) {
+        const elements = parent.getElementsByTagNameNS("*", localName);
+        if (elements && elements.length > 0) return elements[0];
+      }
+    } catch (e) {
+      // Ignore namespace errors
+    }
+
+    return null;
+  }
+
+  // Normalize DRM element names for consistent property naming
+  normalizeDRMElementName(elementName) {
+    const localName = elementName.split(":").pop().toLowerCase();
+
+    // Map common DRM element names to standard properties
+    const nameMap = {
+      pssh: "pssh",
+      pro: "mspr",
+      license: "widevine",
+      certificate: "fairplay",
+      metadata: "adobe",
+      mas: "marlin",
+      laurl: "clearkey",
+    };
+
+    return nameMap[localName] || localName;
   }
 
   extractDescriptor(element) {
@@ -1375,7 +1960,7 @@ export class ManifestService {
     };
   }
 
-  // Validate multiple BaseURL conflicts
+  // Validate multiple BaseURL conflicts (enhanced with configurable flexibility)
   validateBaseURLConflicts(mpdData, xml, validation) {
     const baseUrls = [];
 
@@ -1425,23 +2010,52 @@ export class ManifestService {
       });
     });
 
-    // Check for conflicts
+    // Enhanced conflict detection with flexibility for SSAI scenarios
     const urlMap = new Map();
     baseUrls.forEach(({ level, url }) => {
       if (urlMap.has(url)) {
-        validation.warnings.push({
-          type: "BASEURL_CONFLICT",
-          message: `Duplicate BaseURL "${url}" found at ${level} and ${urlMap.get(
-            url
-          )}`,
-          severity: "LOW",
-        });
+        // Only flag as conflict if URLs are identical and at same hierarchy level
+        const existingLevel = urlMap.get(url);
+        const isSameHierarchy = this.isSameHierarchyLevel(level, existingLevel);
+
+        if (isSameHierarchy) {
+          validation.warnings.push({
+            type: "BASEURL_CONFLICT",
+            message: `Duplicate BaseURL "${url}" found at ${level} and ${existingLevel}`,
+            severity: "LOW",
+            note: "This may be intentional for redundancy or load balancing",
+          });
+        } else {
+          // Different hierarchy levels - this is often intentional
+          validation.info = validation.info || [];
+          validation.info.push({
+            type: "BASEURL_HIERARCHY",
+            message: `BaseURL "${url}" used at multiple hierarchy levels: ${level} and ${existingLevel}`,
+            severity: "INFO",
+            note: "This is normal for URL inheritance in DASH",
+          });
+        }
       } else {
         urlMap.set(url, level);
       }
     });
 
     validation.interdependencies.baseUrls = baseUrls;
+  }
+
+  // Helper method to determine if two levels are in the same hierarchy
+  isSameHierarchyLevel(level1, level2) {
+    const getHierarchyDepth = (level) => {
+      if (level === "MPD") return 0;
+      if (level.includes("Period") && !level.includes("AdaptationSet"))
+        return 1;
+      if (level.includes("AdaptationSet") && !level.includes("Representation"))
+        return 2;
+      if (level.includes("Representation")) return 3;
+      return -1;
+    };
+
+    return getHierarchyDepth(level1) === getHierarchyDepth(level2);
   }
 
   // Validate live stream consistency

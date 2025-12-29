@@ -1,4 +1,36 @@
 const SSAIMPDValidator = {
+  // Configurable validation thresholds for different scenarios
+  config: {
+    // Live stream timing tolerances (configurable)
+    liveTolerances: {
+      availabilityStartTimeDrift: 2000, // 2 seconds (increased from 1s)
+      timeShiftBufferReduction: 0.15, // Allow 15% reduction (increased from 10%)
+      minimumUpdatePeriodVariation: 1.0, // 100% variation allowed (increased from 50%)
+      bufferTimeMultiplier: 1.5, // Allow 50% increase in buffer time
+    },
+
+    // VOD stream timing tolerances
+    vodTolerances: {
+      mediaPresentationDurationTolerance: 0.1, // 100ms tolerance (increased from 1ms)
+      strictTimingValidation: false, // Less strict for VOD (changed from true)
+      periodTimingTolerance: 0.5, // 500ms tolerance for period timing
+    },
+
+    // General timing tolerances
+    generalTolerances: {
+      periodStartDrift: 0.2, // 200ms tolerance (increased from 100ms)
+      durationMismatchTolerance: 0.05, // 5% tolerance for duration mismatches
+      timelineAccumulationTolerance: 1.0, // 1 second cumulative tolerance
+    },
+
+    // DRM validation settings
+    drmTolerances: {
+      allowMissingNonCriticalDRM: true, // Allow missing non-critical DRM elements
+      requireSchemeIdUriMatch: true, // Require schemeIdUri to match
+      allowAdditionalDRMSystems: true, // Allow SSAI to add DRM systems
+    },
+  },
+
   validateMPDRoot(sourceMPD, ssaiMPD) {
     const errors = [];
     const warnings = [];
@@ -46,7 +78,8 @@ const SSAIMPDValidator = {
             new Date(ssaiMPD.availabilityStartTime) -
               new Date(sourceMPD.availabilityStartTime)
           );
-          return diff <= 1000;
+          // Use configurable tolerance instead of hardcoded 1000ms
+          return diff <= this.config.liveTolerances.availabilityStartTimeDrift;
         },
         message: "availabilityStartTime mismatch exceeds tolerance",
         attribute: "availabilityStartTime",
@@ -115,7 +148,12 @@ const SSAIMPDValidator = {
 
           if (srcDepthResult.value === null || ssaiDepthResult.value === null)
             return true;
-          return ssaiDepthResult.value >= srcDepthResult.value * 0.9;
+          // Use configurable tolerance instead of hardcoded 0.9
+          const reductionTolerance =
+            1 - this.config.liveTolerances.timeShiftBufferReduction;
+          return (
+            ssaiDepthResult.value >= srcDepthResult.value * reductionTolerance
+          );
         },
         message: "timeShiftBufferDepth significantly reduced",
         attribute: "timeShiftBufferDepth",
@@ -447,8 +485,8 @@ const SSAIMPDValidator = {
               const startDiff = Math.abs(
                 sourceStartResult.value - ssaiStartResult.value
               );
-              if (startDiff > 0.1) {
-                // 100ms tolerance
+              if (startDiff > this.config.generalTolerances.periodStartDrift) {
+                // Use configurable tolerance instead of hardcoded 100ms
                 warnings.push({
                   severity: "MEDIUM",
                   message: `Period start time mismatch: ${startDiff.toFixed(
@@ -1529,20 +1567,68 @@ const SSAIMPDValidator = {
 
     // Video-specific validation
     if (srcRep.width || srcRep.height) {
-      if (!ssaiRep.width || !ssaiRep.height) {
+      // Width validation
+      if (srcRep.width && ssaiRep.width && srcRep.width !== ssaiRep.width) {
         errors.push({
-          severity: "HIGH",
-          message: `Video representation missing resolution`,
+          severity: "VERY_HIGH",
+          message: `Representation width mismatch`,
+          attribute: "width",
+          sourceValue: srcRep.width.toString(),
+          ssaiValue: ssaiRep.width.toString(),
           periodId,
           adaptationSetId,
           representationId: srcRep.id || ssaiRep.id,
-          expected: `${srcRep.width}x${srcRep.height}`,
-          actual: `${ssaiRep.width || "missing"}x${
-            ssaiRep.height || "missing"
-          }`,
+          impact: "Incorrect values affect quality selection and display",
+          solution:
+            "Verify video resolution parameters - incorrect values affect quality selection and display",
         });
-      } else {
-        // Validate aspect ratio consistency
+      } else if (srcRep.width && !ssaiRep.width) {
+        errors.push({
+          severity: "HIGH",
+          message: `Representation width missing in SSAI`,
+          attribute: "width",
+          sourceValue: srcRep.width.toString(),
+          ssaiValue: "Missing",
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          impact: "Video resolution cannot be determined",
+          solution: "Add missing width attribute to SSAI representation",
+        });
+      }
+
+      // Height validation
+      if (srcRep.height && ssaiRep.height && srcRep.height !== ssaiRep.height) {
+        errors.push({
+          severity: "VERY_HIGH",
+          message: `Representation height mismatch`,
+          attribute: "height",
+          sourceValue: srcRep.height.toString(),
+          ssaiValue: ssaiRep.height.toString(),
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          impact: "Incorrect values affect quality selection and display",
+          solution:
+            "Verify video resolution parameters - incorrect values affect quality selection and display",
+        });
+      } else if (srcRep.height && !ssaiRep.height) {
+        errors.push({
+          severity: "HIGH",
+          message: `Representation height missing in SSAI`,
+          attribute: "height",
+          sourceValue: srcRep.height.toString(),
+          ssaiValue: "Missing",
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          impact: "Video resolution cannot be determined",
+          solution: "Add missing height attribute to SSAI representation",
+        });
+      }
+
+      // Validate aspect ratio consistency
+      if (srcRep.width && srcRep.height && ssaiRep.width && ssaiRep.height) {
         const srcAspectRatio = srcRep.width / srcRep.height;
         const ssaiAspectRatio = ssaiRep.width / ssaiRep.height;
         const aspectDiff = Math.abs(srcAspectRatio - ssaiAspectRatio);
@@ -1551,11 +1637,13 @@ const SSAIMPDValidator = {
           warnings.push({
             severity: "MEDIUM",
             message: `Aspect ratio mismatch`,
+            attribute: "aspectRatio",
+            sourceValue: srcAspectRatio.toFixed(3),
+            ssaiValue: ssaiAspectRatio.toFixed(3),
             periodId,
             adaptationSetId,
             representationId: srcRep.id || ssaiRep.id,
-            expected: srcAspectRatio.toFixed(3),
-            actual: ssaiAspectRatio.toFixed(3),
+            solution: "Verify aspect ratio consistency between source and SSAI",
           });
         }
       }
@@ -1568,42 +1656,66 @@ const SSAIMPDValidator = {
           errors.push({
             severity: "HIGH",
             message: `Frame rate mismatch`,
+            attribute: "frameRate",
+            sourceValue: srcRep.frameRate,
+            ssaiValue: ssaiRep.frameRate,
             periodId,
             adaptationSetId,
             representationId: srcRep.id || ssaiRep.id,
-            expected: srcRep.frameRate,
-            actual: ssaiRep.frameRate,
+            impact: "Frame rate differences affect playback smoothness",
+            solution: "Ensure frame rate consistency between source and SSAI",
           });
         }
+      } else if (srcRep.frameRate && !ssaiRep.frameRate) {
+        warnings.push({
+          severity: "MEDIUM",
+          message: `Frame rate missing in SSAI`,
+          attribute: "frameRate",
+          sourceValue: srcRep.frameRate,
+          ssaiValue: "Missing",
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          solution: "Add missing frameRate attribute to SSAI representation",
+        });
       }
     }
 
     // Audio-specific validation
     if (srcRep.audioSamplingRate || ssaiRep.audioSamplingRate) {
-      if (srcRep.audioSamplingRate && !ssaiRep.audioSamplingRate) {
-        errors.push({
-          severity: "HIGH",
-          message: `Audio sampling rate missing in SSAI`,
-          periodId,
-          adaptationSetId,
-          representationId: srcRep.id || ssaiRep.id,
-          expected: srcRep.audioSamplingRate,
-        });
-      } else if (srcRep.audioSamplingRate && ssaiRep.audioSamplingRate) {
+      if (srcRep.audioSamplingRate && ssaiRep.audioSamplingRate) {
         const sampleRateDiff = Math.abs(
           srcRep.audioSamplingRate - ssaiRep.audioSamplingRate
         );
         if (sampleRateDiff > 0) {
           errors.push({
-            severity: "HIGH",
-            message: `Audio sampling rate mismatch`,
+            severity: "VERY_HIGH",
+            message: `Representation audioSamplingRate mismatch`,
+            attribute: "audioSamplingRate",
+            sourceValue: srcRep.audioSamplingRate.toString(),
+            ssaiValue: ssaiRep.audioSamplingRate.toString(),
             periodId,
             adaptationSetId,
             representationId: srcRep.id || ssaiRep.id,
-            expected: srcRep.audioSamplingRate,
-            actual: ssaiRep.audioSamplingRate,
+            impact: "Audio sampling rate differences affect audio quality",
+            solution:
+              "Ensure audio sampling rate consistency between source and SSAI",
           });
         }
+      } else if (srcRep.audioSamplingRate && !ssaiRep.audioSamplingRate) {
+        errors.push({
+          severity: "HIGH",
+          message: `Audio sampling rate missing in SSAI`,
+          attribute: "audioSamplingRate",
+          sourceValue: srcRep.audioSamplingRate.toString(),
+          ssaiValue: "Missing",
+          periodId,
+          adaptationSetId,
+          representationId: srcRep.id || ssaiRep.id,
+          impact: "Audio sampling rate cannot be determined",
+          solution:
+            "Add missing audioSamplingRate attribute to SSAI representation",
+        });
       }
     }
 
@@ -1617,25 +1729,42 @@ const SSAIMPDValidator = {
           errors.push({
             severity: "VERY_HIGH",
             message: `Codec family mismatch`,
+            attribute: "codecs",
+            sourceValue: srcRep.codecs,
+            ssaiValue: ssaiRep.codecs,
             periodId,
             adaptationSetId,
             representationId: srcRep.id || ssaiRep.id,
-            expected: srcRep.codecs,
-            actual: ssaiRep.codecs,
+            impact: "Different codec families may cause playback issues",
+            solution: "Ensure codec family consistency between source and SSAI",
           });
         } else {
           warnings.push({
             severity: "MEDIUM",
             message: `Codec profile/level mismatch`,
+            attribute: "codecs",
+            sourceValue: srcRep.codecs,
+            ssaiValue: ssaiRep.codecs,
             periodId,
             adaptationSetId,
             representationId: srcRep.id || ssaiRep.id,
-            expected: srcRep.codecs,
-            actual: ssaiRep.codecs,
             note: "Same codec family but different profile/level",
+            solution: "Review codec profile/level differences",
           });
         }
       }
+    } else if (srcRep.codecs && !ssaiRep.codecs) {
+      warnings.push({
+        severity: "MEDIUM",
+        message: `Codecs missing in SSAI`,
+        attribute: "codecs",
+        sourceValue: srcRep.codecs,
+        ssaiValue: "Missing",
+        periodId,
+        adaptationSetId,
+        representationId: srcRep.id || ssaiRep.id,
+        solution: "Add missing codecs attribute to SSAI representation",
+      });
     }
 
     return { errors, warnings };
@@ -2403,26 +2532,84 @@ const SSAIMPDValidator = {
         },
       };
 
-    const regex =
+    // Comprehensive ISO 8601 duration format parsing
+    // Supports all valid formats: PT1H30M45S, PT3599S, PT16M40S, PT0.5H, PT30.5M, PT45.123S
+
+    // Primary regex for standard PT format
+    const primaryRegex =
       /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
-    const matches = isoDuration.match(regex);
-    if (!matches) {
+    const primaryMatches = isoDuration.match(primaryRegex);
+
+    if (primaryMatches) {
+      const hours = parseFloat(primaryMatches[1] || 0);
+      const minutes = parseFloat(primaryMatches[2] || 0);
+      const seconds = parseFloat(primaryMatches[3] || 0);
+      return { value: hours * 3600 + minutes * 60 + seconds, error: null };
+    }
+
+    // Extended regex for formats with days (P1DT1H30M45S)
+    const extendedRegex =
+      /^P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+    const extendedMatches = isoDuration.match(extendedRegex);
+
+    if (extendedMatches) {
+      const days = parseFloat(extendedMatches[1] || 0);
+      const hours = parseFloat(extendedMatches[2] || 0);
+      const minutes = parseFloat(extendedMatches[3] || 0);
+      const seconds = parseFloat(extendedMatches[4] || 0);
       return {
-        value: null,
-        error: {
-          severity: "HIGH",
-          message: `Invalid ISO 8601 duration format: ${isoDuration}`,
-          context: context,
-          value: isoDuration,
-          expectedFormat: "PT[H]H[M]M[S]S (e.g., PT1H30M45S)",
-        },
+        value: days * 86400 + hours * 3600 + minutes * 60 + seconds,
+        error: null,
       };
     }
 
-    const hours = parseFloat(matches[1] || 0);
-    const minutes = parseFloat(matches[2] || 0);
-    const seconds = parseFloat(matches[3] || 0);
-    return { value: hours * 3600 + minutes * 60 + seconds, error: null };
+    // Handle edge cases for malformed but parseable durations
+    // Some encoders produce PT3599.000S instead of PT59M59S
+    const edgeCaseRegex = /^PT(\d+(?:\.\d+)?)S$/;
+    const edgeCaseMatches = isoDuration.match(edgeCaseRegex);
+
+    if (edgeCaseMatches) {
+      return { value: parseFloat(edgeCaseMatches[1]), error: null };
+    }
+
+    // Handle minutes-only format: PT16M40S should be equivalent to PT1000S
+    const minutesOnlyRegex = /^PT(\d+(?:\.\d+)?)M(?:(\d+(?:\.\d+)?)S)?$/;
+    const minutesOnlyMatches = isoDuration.match(minutesOnlyRegex);
+
+    if (minutesOnlyMatches) {
+      const minutes = parseFloat(minutesOnlyMatches[1] || 0);
+      const seconds = parseFloat(minutesOnlyMatches[2] || 0);
+      return { value: minutes * 60 + seconds, error: null };
+    }
+
+    // Handle hours-only format: PT1H should be equivalent to PT3600S
+    const hoursOnlyRegex = /^PT(\d+(?:\.\d+)?)H$/;
+    const hoursOnlyMatches = isoDuration.match(hoursOnlyRegex);
+
+    if (hoursOnlyMatches) {
+      const hours = parseFloat(hoursOnlyMatches[1]);
+      return { value: hours * 3600, error: null };
+    }
+
+    // If no format matches, return error with enhanced context
+    return {
+      value: null,
+      error: {
+        severity: "HIGH",
+        message: `Invalid ISO 8601 duration format: ${isoDuration}`,
+        context: context,
+        value: isoDuration,
+        expectedFormat: "PT[H]H[M]M[S]S (e.g., PT1H30M45S, PT3599S, PT16M40S)",
+        supportedFormats: [
+          "PT1H30M45S (hours, minutes, seconds)",
+          "PT3599S (seconds only)",
+          "PT16M40S (minutes and seconds)",
+          "PT1H (hours only)",
+          "PT30M (minutes only)",
+          "P1DT1H30M45S (days, hours, minutes, seconds)",
+        ],
+      },
+    };
   },
   buildTimeline(periods) {
     const timeline = [];
@@ -3341,12 +3528,15 @@ const SSAIMPDValidator = {
       return true;
     }
 
-    // Enhanced validation for dynamic MPDs
+    // Enhanced validation with configurable tolerances for different stream types
     if (sourceMPD.type === "dynamic") {
-      // For dynamic MPDs, duration can be optional or represent finite live
+      // For dynamic MPDs, use live stream tolerances
       if (ssaiDurationResult.value < sourceDurationResult.value) {
-        // Allow some tolerance for live streams
-        const tolerance = Math.max(sourceDurationResult.value * 0.01, 1); // 1% or 1 second
+        const tolerance = Math.max(
+          sourceDurationResult.value *
+            this.config.generalTolerances.durationMismatchTolerance,
+          this.config.vodTolerances.mediaPresentationDurationTolerance
+        );
         return (
           Math.abs(sourceDurationResult.value - ssaiDurationResult.value) <=
           tolerance
@@ -3355,8 +3545,19 @@ const SSAIMPDValidator = {
       return true;
     }
 
-    // For static MPDs, SSAI duration should not be shorter
-    return ssaiDurationResult.value >= sourceDurationResult.value;
+    // For static MPDs, use VOD tolerances - allow for minor differences due to ad insertion
+    const tolerance =
+      this.config.vodTolerances.mediaPresentationDurationTolerance;
+    const durationDiff = sourceDurationResult.value - ssaiDurationResult.value;
+
+    // SSAI can be longer (ads added) or slightly shorter (minor trimming)
+    if (durationDiff > 0) {
+      // Source is longer - allow small reduction
+      return durationDiff <= tolerance;
+    } else {
+      // SSAI is longer - this is expected with ad insertion
+      return true;
+    }
   },
 
   // Enhanced buffer time validation with tolerance and stream-type awareness
@@ -3440,7 +3641,7 @@ const SSAIMPDValidator = {
       });
     }
 
-    // Validate timeShiftBufferDepth vs minimumUpdatePeriod (with explanation)
+    // Validate timeShiftBufferDepth vs minimumUpdatePeriod (with configurable flexibility)
     if (sourceMPD.type === "dynamic") {
       const ssaiTSBD = this.parseDuration(
         ssaiMPD.timeShiftBufferDepth,
@@ -3454,16 +3655,20 @@ const SSAIMPDValidator = {
       if (
         ssaiTSBD.value &&
         ssaiMUP.value &&
-        ssaiTSBD.value < ssaiMUP.value * 2
+        ssaiTSBD.value <
+          ssaiMUP.value * this.config.liveTolerances.bufferTimeMultiplier
       ) {
         warnings.push({
           severity: "LOW", // Downgraded as this is heuristic
-          message:
-            "timeShiftBufferDepth < 2x minimumUpdatePeriod (recommended practice, not spec requirement)",
+          message: `timeShiftBufferDepth < ${this.config.liveTolerances.bufferTimeMultiplier}x minimumUpdatePeriod (recommended practice, not spec requirement)`,
           attribute: "liveTimingHeuristic",
-          expected: `>= ${(ssaiMUP.value * 2).toFixed(1)}s (2x MUP)`,
+          expected: `>= ${(
+            ssaiMUP.value * this.config.liveTolerances.bufferTimeMultiplier
+          ).toFixed(1)}s (${
+            this.config.liveTolerances.bufferTimeMultiplier
+          }x MUP)`,
           actual: `${ssaiTSBD.value}s`,
-          note: "This is a best practice recommendation, not a strict specification requirement",
+          note: "This is a best practice recommendation with configurable tolerance, not a strict specification requirement",
         });
       }
     }

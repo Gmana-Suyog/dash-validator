@@ -19,7 +19,7 @@ export class ManifestComparison {
       semanticMatching: true, // Use semantic matching instead of index-based
       cumulativeDriftThreshold: 0.1, // 100ms cumulative drift threshold
 
-      // SSAI-specific tolerances and rules
+      // SSAI-specific tolerances and rules (enhanced with configurable thresholds)
       ssaiRules: {
         // Duration tolerance for SSAI (ads can extend content)
         durationIncreaseTolerance: 2.0, // Allow up to 200% increase for heavy ad load
@@ -28,17 +28,34 @@ export class ManifestComparison {
         // Buffer time adjustments for ad transitions
         minBufferTimeMultiplier: 1.2, // SSAI should have 20% more buffer time
 
-        // Live stream specific tolerances
+        // Live stream specific tolerances (configurable)
         liveTolerances: {
-          availabilityStartTimeDrift: 1.0, // 1 second tolerance for live start time
-          timeShiftBufferReduction: 0.1, // Allow 10% reduction in timeshift buffer
-          minimumUpdatePeriodVariation: 0.5, // 50% variation allowed in update period
+          availabilityStartTimeDrift: 2.0, // 2 seconds tolerance (increased)
+          timeShiftBufferReduction: 0.15, // Allow 15% reduction in timeshift buffer
+          minimumUpdatePeriodVariation: 1.0, // 100% variation allowed in update period
+          timelineDriftTolerance: 0.5, // 500ms timeline drift tolerance (increased)
         },
 
-        // VOD specific tolerances
+        // VOD specific tolerances (configurable)
         vodTolerances: {
-          mediaPresentationDurationTolerance: 0.001, // 1ms tolerance for VOD duration
-          strictTimingValidation: true, // Stricter validation for VOD content
+          mediaPresentationDurationTolerance: 0.1, // 100ms tolerance (increased)
+          strictTimingValidation: false, // Less strict validation for VOD
+          periodTimingTolerance: 0.5, // 500ms tolerance for period timing
+        },
+
+        // BaseURL validation rules (more flexible)
+        baseUrlRules: {
+          allowDifferentBaseUrls: true, // Allow SSAI to use different base URLs
+          requireHttpsUpgrade: false, // Don't require HTTPS upgrade
+          allowCdnSwitching: true, // Allow CDN switching in SSAI
+        },
+
+        // DRM validation rules (more flexible)
+        drmRules: {
+          allowMissingNonCriticalDRM: true, // Allow missing non-critical DRM elements
+          requireSchemeIdUriMatch: true, // Require schemeIdUri to match
+          allowAdditionalDRMSystems: true, // Allow SSAI to add DRM systems
+          allowDRMRemoval: false, // Don't allow DRM removal
         },
       },
     };
@@ -47,26 +64,33 @@ export class ManifestComparison {
   compareManifests(sourceManifest, ssaiManifest) {
     if (!sourceManifest || !ssaiManifest) return [];
 
-    // Enhanced comparison with robust matching
+    // 1. FIRST: Raw structural comparison (deterministic algorithm)
+    const rawStructuralDifferences = this.performRawStructuralComparison(
+      sourceManifest,
+      ssaiManifest
+    );
+
+    // 2. Enhanced comparison with robust matching
     const enhancedComparison = this.performEnhancedComparison(
       sourceManifest,
       ssaiManifest
     );
 
-    // Run comprehensive validation
+    // 3. Run comprehensive validation
     const comprehensiveValidation = this.performComprehensiveValidation(
       sourceManifest,
       ssaiManifest
     );
 
-    // Add semantic validation results
+    // 4. Add semantic validation results
     const semanticValidation = this.processSemanticValidation(
       sourceManifest,
       ssaiManifest
     );
 
-    // Combine results with deduplication
+    // Combine results with deduplication, prioritizing raw structural differences
     return this.combineValidationResults(
+      rawStructuralDifferences,
       enhancedComparison,
       comprehensiveValidation,
       semanticValidation,
@@ -76,6 +100,7 @@ export class ManifestComparison {
   }
 
   async combineValidationResults(
+    rawStructuralResults,
     enhancedResults,
     comprehensivePromise,
     semanticResults = [],
@@ -88,7 +113,15 @@ export class ManifestComparison {
       // Create a map for efficient deduplication
       const issueMap = new Map();
 
-      // Add enhanced results first
+      // Add raw structural results FIRST (highest priority)
+      rawStructuralResults.forEach((result) => {
+        const key = this.generateIssueKey(result);
+        if (!issueMap.has(key)) {
+          issueMap.set(key, result);
+        }
+      });
+
+      // Add enhanced results second
       enhancedResults.forEach((result) => {
         const key = this.generateIssueKey(result);
         if (!issueMap.has(key)) {
@@ -142,13 +175,1043 @@ export class ManifestComparison {
         "Comprehensive validation failed, using enhanced comparison only:",
         error
       );
-      return [...enhancedResults, ...semanticResults];
+      return [...rawStructuralResults, ...enhancedResults, ...semanticResults];
     }
   }
 
   generateIssueKey(issue) {
     // Generate a unique key for deduplication based on issue characteristics
     return `${issue.type}_${issue.tag}_${issue.attribute}_${issue.message}`.toLowerCase();
+  }
+
+  // RAW STRUCTURAL COMPARISON - Deterministic algorithm for exact differences
+  performRawStructuralComparison(sourceManifest, ssaiManifest) {
+    const differences = [];
+
+    try {
+      // 1. Build tree structures preserving raw XML structure
+      const sourceTree = this.buildRawXMLTree(sourceManifest);
+      const ssaiTree = this.buildRawXMLTree(ssaiManifest);
+
+      // 2. Compare trees using exact node matching
+      this.compareRawTrees(sourceTree, ssaiTree, differences);
+    } catch (error) {
+      console.warn("Raw structural comparison failed:", error);
+      differences.push({
+        type: "RAW_COMPARISON_ERROR",
+        tag: "Comparison",
+        attribute: "error",
+        sourceValue: "Available",
+        ssaiValue: "Failed",
+        solution: "Check manifest XML structure",
+        severity: "HIGH",
+        message: `Raw comparison failed: ${error.message}`,
+      });
+    }
+
+    return differences;
+  }
+
+  // Build raw XML tree preserving exact structure
+  buildRawXMLTree(manifest) {
+    if (!manifest) return null;
+
+    const tree = {
+      path: "",
+      name: "",
+      attributes: new Map(),
+      children: [],
+      namespaces: new Map(),
+    };
+
+    // Handle XML document
+    if (manifest.nodeType === Node.DOCUMENT_NODE) {
+      const root = manifest.documentElement;
+      if (root) {
+        return this.buildNodeTree(root, "/");
+      }
+    } else if (manifest.nodeType === Node.ELEMENT_NODE) {
+      return this.buildNodeTree(manifest, "/");
+    }
+
+    return tree;
+  }
+
+  // Build tree for a specific node
+  buildNodeTree(node, parentPath) {
+    const nodeName = node.tagName || node.localName || node.nodeName;
+    const currentPath =
+      parentPath === "/" ? `/${nodeName}` : `${parentPath}/${nodeName}`;
+
+    const nodeTree = {
+      path: currentPath,
+      name: nodeName,
+      attributes: new Map(),
+      children: [],
+      namespaces: new Map(),
+    };
+
+    // Extract ALL attributes (raw string values, no normalization)
+    if (node.attributes) {
+      for (let i = 0; i < node.attributes.length; i++) {
+        const attr = node.attributes[i];
+        const attrName = attr.name;
+        const attrValue = attr.value;
+
+        // Store raw attribute values
+        nodeTree.attributes.set(attrName, attrValue);
+
+        // Track namespaces separately
+        if (attrName.startsWith("xmlns")) {
+          nodeTree.namespaces.set(attrName, attrValue);
+        }
+      }
+    }
+
+    // Process child elements (preserve order)
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) {
+        const child = node.childNodes[i];
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          const childTree = this.buildNodeTree(child, currentPath);
+          nodeTree.children.push(childTree);
+        }
+      }
+    }
+
+    return nodeTree;
+  }
+
+  // Compare raw trees using exact matching rules
+  compareRawTrees(sourceTree, ssaiTree, differences) {
+    if (!sourceTree || !ssaiTree) return;
+
+    // Start comparison from root
+    this.compareRawNodes(sourceTree, ssaiTree, differences);
+  }
+
+  // CRITICAL VALIDATIONS - Must be checked first
+  performCriticalValidations(sourceNode, ssaiNode, differences) {
+    // 1. Critical Period validations (start, id, offset, presentationTimeOffset)
+    if (sourceNode.name === "Period") {
+      this.validateCriticalPeriodAttributes(sourceNode, ssaiNode, differences);
+    }
+
+    // 2. Critical SegmentTemplate validations (startNumber to Offset conversion)
+    if (sourceNode.name === "SegmentTemplate") {
+      this.validateCriticalSegmentTemplateOffset(
+        sourceNode,
+        ssaiNode,
+        differences
+      );
+    }
+
+    // 3. Critical presentationTimeOffset validation
+    if (
+      sourceNode.name === "SegmentTemplate" ||
+      sourceNode.name === "SegmentBase"
+    ) {
+      this.validateCriticalPresentationTimeOffset(
+        sourceNode,
+        ssaiNode,
+        differences
+      );
+    }
+  }
+
+  // Validate critical Period attributes with highest priority
+  validateCriticalPeriodAttributes(sourceNode, ssaiNode, differences) {
+    const criticalPeriodAttrs = ["start", "id", "duration"];
+
+    criticalPeriodAttrs.forEach((attrName) => {
+      const sourceValue = sourceNode.attributes.get(attrName);
+      const ssaiValue = ssaiNode.attributes.get(attrName);
+
+      if (sourceValue && ssaiValue) {
+        // Special handling for Period start - this is CRITICAL for timeline alignment
+        if (attrName === "start") {
+          // Convert both to seconds for meaningful comparison while preserving raw difference detection
+          const sourceSeconds = this.convertDurationToSeconds(sourceValue);
+          const ssaiSeconds = this.convertDurationToSeconds(ssaiValue);
+
+          if (sourceSeconds !== null && ssaiSeconds !== null) {
+            const timeDiff = Math.abs(sourceSeconds - ssaiSeconds);
+            if (timeDiff > 0.001) {
+              // 1ms tolerance for critical timing
+              differences.push({
+                type: "CRITICAL_PERIOD_START_MISMATCH",
+                tag: "Period",
+                attribute: "start",
+                sourceValue: `${sourceValue} (${sourceSeconds}s)`,
+                ssaiValue: `${ssaiValue} (${ssaiSeconds}s)`,
+                solution:
+                  "CRITICAL: Fix Period start time alignment - this affects timeline synchronization",
+                severity: "VERY_HIGH",
+                message: `CRITICAL Period start mismatch: ${timeDiff.toFixed(
+                  3
+                )}s difference`,
+                timeDifference: timeDiff,
+                priority: "CRITICAL",
+              });
+            }
+          } else if (sourceValue !== ssaiValue) {
+            // Fallback to raw string comparison if conversion fails
+            differences.push({
+              type: "CRITICAL_PERIOD_START_RAW_MISMATCH",
+              tag: "Period",
+              attribute: "start",
+              sourceValue: sourceValue,
+              ssaiValue: ssaiValue,
+              solution:
+                "CRITICAL: Fix Period start time format - unable to parse duration",
+              severity: "VERY_HIGH",
+              message: `CRITICAL Period start raw value mismatch: ${sourceValue} vs ${ssaiValue}`,
+              priority: "CRITICAL",
+            });
+          }
+        } else if (attrName === "id") {
+          // Period ID must match exactly for proper period mapping
+          if (sourceValue !== ssaiValue) {
+            differences.push({
+              type: "CRITICAL_PERIOD_ID_MISMATCH",
+              tag: "Period",
+              attribute: "id",
+              sourceValue: sourceValue,
+              ssaiValue: ssaiValue,
+              solution:
+                "CRITICAL: Period ID must match exactly for proper SSAI period mapping",
+              severity: "VERY_HIGH",
+              message: `CRITICAL Period ID mismatch: ${sourceValue} vs ${ssaiValue}`,
+              priority: "CRITICAL",
+            });
+          }
+        } else {
+          // Other critical attributes
+          if (sourceValue !== ssaiValue) {
+            differences.push({
+              type: `CRITICAL_PERIOD_${attrName.toUpperCase()}_MISMATCH`,
+              tag: "Period",
+              attribute: attrName,
+              sourceValue: sourceValue,
+              ssaiValue: ssaiValue,
+              solution: `CRITICAL: Fix Period ${attrName} mismatch`,
+              severity: "VERY_HIGH",
+              message: `CRITICAL Period ${attrName} mismatch: ${sourceValue} vs ${ssaiValue}`,
+              priority: "CRITICAL",
+            });
+          }
+        }
+      } else if (sourceValue && !ssaiValue) {
+        differences.push({
+          type: `CRITICAL_PERIOD_${attrName.toUpperCase()}_MISSING`,
+          tag: "Period",
+          attribute: attrName,
+          sourceValue: sourceValue,
+          ssaiValue: "Missing",
+          solution: `CRITICAL: Add missing Period ${attrName} to SSAI manifest`,
+          severity: "VERY_HIGH",
+          message: `CRITICAL Period ${attrName} missing in SSAI`,
+          priority: "CRITICAL",
+        });
+      }
+    });
+  }
+
+  // Validate critical SegmentTemplate offset (startNumber to Offset conversion)
+  validateCriticalSegmentTemplateOffset(sourceNode, ssaiNode, differences) {
+    const sourceStartNumber = sourceNode.attributes.get("startNumber");
+    const ssaiStartNumber = ssaiNode.attributes.get("startNumber");
+    const sourceDuration = sourceNode.attributes.get("duration");
+    const ssaiDuration = ssaiNode.attributes.get("duration");
+    const sourceTimescale = sourceNode.attributes.get("timescale") || "1";
+    const ssaiTimescale = ssaiNode.attributes.get("timescale") || "1";
+
+    // Convert startNumber to offset for comparison
+    if (
+      sourceStartNumber &&
+      ssaiStartNumber &&
+      sourceDuration &&
+      ssaiDuration
+    ) {
+      const sourceOffset = this.calculateSegmentOffset(
+        sourceStartNumber,
+        sourceDuration,
+        sourceTimescale
+      );
+      const ssaiOffset = this.calculateSegmentOffset(
+        ssaiStartNumber,
+        ssaiDuration,
+        ssaiTimescale
+      );
+
+      if (sourceOffset !== null && ssaiOffset !== null) {
+        const offsetDiff = Math.abs(sourceOffset - ssaiOffset);
+        if (offsetDiff > 0.001) {
+          // 1ms tolerance for critical timing
+          differences.push({
+            type: "CRITICAL_SEGMENT_OFFSET_MISMATCH",
+            tag: "SegmentTemplate",
+            attribute: "startNumber (as offset)",
+            sourceValue: `${sourceStartNumber} (offset: ${sourceOffset}s)`,
+            ssaiValue: `${ssaiStartNumber} (offset: ${ssaiOffset}s)`,
+            solution:
+              "CRITICAL: Fix SegmentTemplate offset alignment - this affects segment timing",
+            severity: "VERY_HIGH",
+            message: `CRITICAL SegmentTemplate offset mismatch: ${offsetDiff.toFixed(
+              3
+            )}s difference`,
+            offsetDifference: offsetDiff,
+            priority: "CRITICAL",
+          });
+        }
+      }
+    }
+
+    // Also validate raw startNumber values
+    if (
+      sourceStartNumber &&
+      ssaiStartNumber &&
+      sourceStartNumber !== ssaiStartNumber
+    ) {
+      differences.push({
+        type: "CRITICAL_START_NUMBER_MISMATCH",
+        tag: "SegmentTemplate",
+        attribute: "startNumber",
+        sourceValue: sourceStartNumber,
+        ssaiValue: ssaiStartNumber,
+        solution:
+          "CRITICAL: Verify startNumber alignment for segment continuity",
+        severity: "HIGH",
+        message: `CRITICAL startNumber mismatch: ${sourceStartNumber} vs ${ssaiStartNumber}`,
+        priority: "CRITICAL",
+      });
+    }
+  }
+
+  // Validate critical presentationTimeOffset
+  validateCriticalPresentationTimeOffset(sourceNode, ssaiNode, differences) {
+    const sourcePTO = sourceNode.attributes.get("presentationTimeOffset");
+    const ssaiPTO = ssaiNode.attributes.get("presentationTimeOffset");
+    const sourceTimescale = sourceNode.attributes.get("timescale") || "1";
+    const ssaiTimescale = ssaiNode.attributes.get("timescale") || "1";
+
+    if (sourcePTO && ssaiPTO) {
+      // Convert PTO to seconds for meaningful comparison
+      const sourcePTOSeconds = this.convertPTOToSeconds(
+        sourcePTO,
+        sourceTimescale
+      );
+      const ssaiPTOSeconds = this.convertPTOToSeconds(ssaiPTO, ssaiTimescale);
+
+      if (sourcePTOSeconds !== null && ssaiPTOSeconds !== null) {
+        const ptoDiff = Math.abs(sourcePTOSeconds - ssaiPTOSeconds);
+        if (ptoDiff > 0.001) {
+          // 1ms tolerance for critical timing
+          differences.push({
+            type: "CRITICAL_PTO_MISMATCH",
+            tag: sourceNode.name,
+            attribute: "presentationTimeOffset",
+            sourceValue: `${sourcePTO} (${sourcePTOSeconds}s)`,
+            ssaiValue: `${ssaiPTO} (${ssaiPTOSeconds}s)`,
+            solution:
+              "CRITICAL: Fix presentationTimeOffset alignment - this affects media timeline",
+            severity: "VERY_HIGH",
+            message: `CRITICAL presentationTimeOffset mismatch: ${ptoDiff.toFixed(
+              3
+            )}s difference`,
+            ptoDifference: ptoDiff,
+            priority: "CRITICAL",
+          });
+        }
+      } else if (sourcePTO !== ssaiPTO) {
+        // Fallback to raw comparison if conversion fails
+        differences.push({
+          type: "CRITICAL_PTO_RAW_MISMATCH",
+          tag: sourceNode.name,
+          attribute: "presentationTimeOffset",
+          sourceValue: sourcePTO,
+          ssaiValue: ssaiPTO,
+          solution: "CRITICAL: Fix presentationTimeOffset raw value mismatch",
+          severity: "VERY_HIGH",
+          message: `CRITICAL presentationTimeOffset raw mismatch: ${sourcePTO} vs ${ssaiPTO}`,
+          priority: "CRITICAL",
+        });
+      }
+    } else if (sourcePTO && !ssaiPTO) {
+      differences.push({
+        type: "CRITICAL_PTO_MISSING",
+        tag: sourceNode.name,
+        attribute: "presentationTimeOffset",
+        sourceValue: sourcePTO,
+        ssaiValue: "Missing",
+        solution:
+          "CRITICAL: Add missing presentationTimeOffset to SSAI manifest",
+        severity: "VERY_HIGH",
+        message: "CRITICAL presentationTimeOffset missing in SSAI",
+        priority: "CRITICAL",
+      });
+    } else if (!sourcePTO && ssaiPTO) {
+      differences.push({
+        type: "CRITICAL_PTO_ADDED",
+        tag: sourceNode.name,
+        attribute: "presentationTimeOffset",
+        sourceValue: "Not Present",
+        ssaiValue: ssaiPTO,
+        solution:
+          "CRITICAL: Verify why presentationTimeOffset was added in SSAI",
+        severity: "HIGH",
+        message: "CRITICAL presentationTimeOffset added in SSAI",
+        priority: "CRITICAL",
+      });
+    }
+  }
+
+  // Helper: Calculate segment offset from startNumber
+  calculateSegmentOffset(startNumber, duration, timescale) {
+    try {
+      const startNum = parseInt(startNumber, 10);
+      const dur = parseInt(duration, 10);
+      const scale = parseInt(timescale, 10);
+
+      if (isNaN(startNum) || isNaN(dur) || isNaN(scale) || scale === 0) {
+        return null;
+      }
+
+      // Offset = (startNumber * duration) / timescale
+      return (startNum * dur) / scale;
+    } catch (error) {
+      console.warn("Failed to calculate segment offset:", error);
+      return null;
+    }
+  }
+
+  // Helper: Convert PTO to seconds
+  convertPTOToSeconds(pto, timescale) {
+    try {
+      const ptoValue = parseInt(pto, 10);
+      const scale = parseInt(timescale, 10);
+
+      if (isNaN(ptoValue) || isNaN(scale) || scale === 0) {
+        return null;
+      }
+
+      return ptoValue / scale;
+    } catch (error) {
+      console.warn("Failed to convert PTO to seconds:", error);
+      return null;
+    }
+  }
+
+  // Helper: Convert duration string to seconds (robust version)
+  convertDurationToSeconds(duration) {
+    if (!duration || typeof duration !== "string") return null;
+
+    // Handle numeric values (assume seconds)
+    if (/^\d+(\.\d+)?$/.test(duration)) {
+      return parseFloat(duration);
+    }
+
+    // Comprehensive ISO 8601 duration format parsing
+    // Primary regex for standard PT format
+    const primaryRegex =
+      /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+    const primaryMatches = duration.match(primaryRegex);
+
+    if (primaryMatches) {
+      const hours = parseFloat(primaryMatches[1] || 0);
+      const minutes = parseFloat(primaryMatches[2] || 0);
+      const seconds = parseFloat(primaryMatches[3] || 0);
+      return hours * 3600 + minutes * 60 + seconds;
+    }
+
+    // Extended regex for formats with days (P1DT1H30M45S)
+    const extendedRegex =
+      /^P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+    const extendedMatches = duration.match(extendedRegex);
+
+    if (extendedMatches) {
+      const days = parseFloat(extendedMatches[1] || 0);
+      const hours = parseFloat(extendedMatches[2] || 0);
+      const minutes = parseFloat(extendedMatches[3] || 0);
+      const seconds = parseFloat(extendedMatches[4] || 0);
+      return days * 86400 + hours * 3600 + minutes * 60 + seconds;
+    }
+
+    return null;
+  }
+
+  // Compare individual nodes using deterministic matching
+  compareRawNodes(sourceNode, ssaiNode, differences) {
+    if (!sourceNode || !ssaiNode) return;
+
+    // 1. FIRST: Run critical validations (highest priority)
+    this.performCriticalValidations(sourceNode, ssaiNode, differences);
+
+    // 2. Compare attributes (raw string comparison)
+    this.compareRawAttributes(sourceNode, ssaiNode, differences);
+
+    // 3. Compare namespaces
+    this.compareRawNamespaces(sourceNode, ssaiNode, differences);
+
+    // 4. Match and compare children using exact matching rules
+    this.matchAndCompareChildren(sourceNode, ssaiNode, differences);
+  }
+
+  // Compare attributes with raw string comparison (no normalization)
+  compareRawAttributes(sourceNode, ssaiNode, differences) {
+    const sourcePath = sourceNode.path;
+    const nodeTag = sourceNode.name;
+
+    // Check attributes in source
+    sourceNode.attributes.forEach((sourceValue, attrName) => {
+      // Skip namespace attributes (handled separately)
+      if (attrName.startsWith("xmlns")) return;
+
+      if (!ssaiNode.attributes.has(attrName)) {
+        // Attribute exists in source but not in SSAI
+        differences.push({
+          type: "MISSING_ATTRIBUTE",
+          tag: nodeTag,
+          attribute: attrName,
+          sourceValue: sourceValue,
+          ssaiValue: "Not Present",
+          solution: `Add missing attribute ${attrName} to SSAI manifest`,
+          severity: "MEDIUM",
+          message: `Attribute "${attrName}" missing in SSAI at ${sourcePath}`,
+        });
+      } else {
+        const ssaiValue = ssaiNode.attributes.get(attrName);
+
+        // Special handling for duration attributes - convert to seconds for comparison
+        if (this.isDurationAttribute(attrName)) {
+          const sourceSeconds = this.convertDurationToSeconds(sourceValue);
+          const ssaiSeconds = this.convertDurationToSeconds(ssaiValue);
+
+          if (sourceSeconds !== null && ssaiSeconds !== null) {
+            // Compare converted values
+            if (Math.abs(sourceSeconds - ssaiSeconds) > 0.001) {
+              // 1ms tolerance
+              differences.push({
+                type: "ATTRIBUTE_VALUE_MISMATCH",
+                tag: nodeTag,
+                attribute: attrName,
+                sourceValue: `${sourceValue} (${sourceSeconds}s)`,
+                ssaiValue: `${ssaiValue} (${ssaiSeconds}s)`,
+                solution: `Verify attribute value difference for ${attrName}`,
+                severity: this.getAttributeSeverity(attrName),
+                message: `Duration attribute differs: ${attrName} at ${sourcePath} - ${Math.abs(
+                  sourceSeconds - ssaiSeconds
+                ).toFixed(3)}s difference`,
+              });
+            }
+          } else {
+            // Fallback to raw string comparison if conversion fails
+            if (sourceValue !== ssaiValue) {
+              differences.push({
+                type: "ATTRIBUTE_VALUE_MISMATCH",
+                tag: nodeTag,
+                attribute: attrName,
+                sourceValue: sourceValue,
+                ssaiValue: ssaiValue,
+                solution: `Verify attribute value difference for ${attrName}`,
+                severity: this.getAttributeSeverity(attrName),
+                message: `Raw attribute value differs: ${attrName} at ${sourcePath}`,
+              });
+            }
+          }
+        } else {
+          // Raw string comparison for non-duration attributes
+          if (sourceValue !== ssaiValue) {
+            differences.push({
+              type: "ATTRIBUTE_VALUE_MISMATCH",
+              tag: nodeTag,
+              attribute: attrName,
+              sourceValue: sourceValue,
+              ssaiValue: ssaiValue,
+              solution: `Verify attribute value difference for ${attrName}`,
+              severity: this.getAttributeSeverity(attrName),
+              message: `Raw attribute value differs: ${attrName} at ${sourcePath}`,
+            });
+          }
+        }
+      }
+    });
+
+    // Check attributes in SSAI that don't exist in source
+    ssaiNode.attributes.forEach((ssaiValue, attrName) => {
+      // Skip namespace attributes (handled separately)
+      if (attrName.startsWith("xmlns")) return;
+
+      if (!sourceNode.attributes.has(attrName)) {
+        differences.push({
+          type: "NEW_ATTRIBUTE",
+          tag: nodeTag,
+          attribute: attrName,
+          sourceValue: "Not Present",
+          ssaiValue: ssaiValue,
+          solution: `Review new attribute ${attrName} in SSAI manifest`,
+          severity: "LOW",
+          message: `New attribute "${attrName}" found in SSAI at ${sourcePath}`,
+        });
+      }
+    });
+  }
+
+  // Helper method to identify duration attributes
+  isDurationAttribute(attrName) {
+    const durationAttributes = [
+      "timeShiftBufferDepth",
+      "minBufferTime",
+      "mediaPresentationDuration",
+      "maxSegmentDuration",
+      "minimumUpdatePeriod",
+      "suggestedPresentationDelay",
+      "start",
+      "duration",
+      "availabilityTimeOffset",
+    ];
+    return durationAttributes.includes(attrName);
+  }
+
+  // Compare namespaces
+  compareRawNamespaces(sourceNode, ssaiNode, differences) {
+    const sourcePath = sourceNode.path;
+    const nodeTag = sourceNode.name;
+
+    // Check namespaces in SSAI that don't exist in source
+    ssaiNode.namespaces.forEach((ssaiValue, nsName) => {
+      if (!sourceNode.namespaces.has(nsName)) {
+        differences.push({
+          type: "NEW_NAMESPACE",
+          tag: nodeTag,
+          attribute: nsName,
+          sourceValue: "Not Present",
+          ssaiValue: ssaiValue,
+          solution: `Review new namespace ${nsName} in SSAI manifest`,
+          severity: "INFO",
+          message: `New namespace "${nsName}" found in SSAI at ${sourcePath}`,
+        });
+      }
+    });
+  }
+
+  // Match and compare children using exact matching rules
+  matchAndCompareChildren(sourceNode, ssaiNode, differences) {
+    const nodeName = sourceNode.name;
+
+    // Apply matching rules based on node type
+    switch (nodeName) {
+      case "MPD":
+        this.matchMPDChildren(sourceNode, ssaiNode, differences);
+        break;
+      case "Period":
+        this.matchPeriodChildren(sourceNode, ssaiNode, differences);
+        break;
+      case "AdaptationSet":
+        this.matchAdaptationSetChildren(sourceNode, ssaiNode, differences);
+        break;
+      case "Representation":
+        this.matchRepresentationChildren(sourceNode, ssaiNode, differences);
+        break;
+      case "SegmentTimeline":
+        this.compareSegmentTimeline(sourceNode, ssaiNode, differences);
+        break;
+      default:
+        this.matchGenericChildren(sourceNode, ssaiNode, differences);
+        break;
+    }
+  }
+
+  // Match MPD children (direct comparison)
+  matchMPDChildren(sourceNode, ssaiNode, differences) {
+    const sourceChildren = this.groupChildrenByName(sourceNode.children);
+    const ssaiChildren = this.groupChildrenByName(ssaiNode.children);
+
+    // Compare each child type
+    Object.keys(sourceChildren).forEach((childName) => {
+      const sourceChildList = sourceChildren[childName];
+      const ssaiChildList = ssaiChildren[childName] || [];
+
+      if (childName === "Period") {
+        this.matchPeriodsByID(sourceChildList, ssaiChildList, differences);
+      } else {
+        this.matchGenericChildList(sourceChildList, ssaiChildList, differences);
+      }
+    });
+
+    // Check for new child types in SSAI
+    Object.keys(ssaiChildren).forEach((childName) => {
+      if (!sourceChildren[childName]) {
+        ssaiChildren[childName].forEach((ssaiChild) => {
+          differences.push({
+            type: "NEW_ELEMENT",
+            tag: ssaiChild.name,
+            attribute: "element",
+            sourceValue: "Not Present",
+            ssaiValue: "Present",
+            solution: `Review new element ${ssaiChild.name}`,
+            severity: "INFO",
+            message: `New element "${ssaiChild.name}" found in SSAI`,
+          });
+        });
+      }
+    });
+  }
+
+  // Match Periods by ID (exact matching)
+  matchPeriodsByID(sourcePeriods, ssaiPeriods, differences) {
+    sourcePeriods.forEach((sourcePeriod) => {
+      const sourceId = sourcePeriod.attributes.get("id");
+
+      if (sourceId) {
+        // Find matching SSAI period by exact ID
+        const matchingSSAIPeriod = ssaiPeriods.find(
+          (p) => p.attributes.get("id") === sourceId
+        );
+
+        if (matchingSSAIPeriod) {
+          // Compare matched periods
+          this.compareRawNodes(sourcePeriod, matchingSSAIPeriod, differences);
+        } else {
+          // Period missing in SSAI
+          differences.push({
+            type: "MISSING_PERIOD",
+            tag: "Period",
+            attribute: "id",
+            sourceValue: sourceId,
+            ssaiValue: "Not Present",
+            solution: `Add missing Period with id="${sourceId}" to SSAI manifest`,
+            severity: "HIGH",
+            message: `Period with id="${sourceId}" missing in SSAI`,
+          });
+        }
+      } else {
+        // Period without ID - match by position
+        const sourceIndex = sourcePeriods.indexOf(sourcePeriod);
+        if (ssaiPeriods[sourceIndex]) {
+          this.compareRawNodes(
+            sourcePeriod,
+            ssaiPeriods[sourceIndex],
+            differences
+          );
+        }
+      }
+    });
+  }
+
+  // Match Period children
+  matchPeriodChildren(sourceNode, ssaiNode, differences) {
+    const sourceChildren = this.groupChildrenByName(sourceNode.children);
+    const ssaiChildren = this.groupChildrenByName(ssaiNode.children);
+
+    // Match AdaptationSets by ID
+    const sourceAS = sourceChildren["AdaptationSet"] || [];
+    const ssaiAS = ssaiChildren["AdaptationSet"] || [];
+    this.matchAdaptationSetsByID(sourceAS, ssaiAS, differences);
+
+    // Match other children generically
+    Object.keys(sourceChildren).forEach((childName) => {
+      if (childName !== "AdaptationSet") {
+        const sourceChildList = sourceChildren[childName];
+        const ssaiChildList = ssaiChildren[childName] || [];
+        this.matchGenericChildList(sourceChildList, ssaiChildList, differences);
+      }
+    });
+  }
+
+  // Match AdaptationSets by ID (exact matching)
+  matchAdaptationSetsByID(sourceAS, ssaiAS, differences) {
+    sourceAS.forEach((sourceAdaptationSet) => {
+      const sourceId = sourceAdaptationSet.attributes.get("id");
+
+      if (sourceId) {
+        // Find matching SSAI AdaptationSet by exact ID
+        const matchingSSAIAS = ssaiAS.find(
+          (as) => as.attributes.get("id") === sourceId
+        );
+
+        if (matchingSSAIAS) {
+          // Compare matched AdaptationSets
+          this.compareRawNodes(
+            sourceAdaptationSet,
+            matchingSSAIAS,
+            differences
+          );
+        } else {
+          // AdaptationSet missing in SSAI
+          differences.push({
+            type: "MISSING_ADAPTATION_SET",
+            tag: "AdaptationSet",
+            attribute: "id",
+            sourceValue: sourceId,
+            ssaiValue: "Not Present",
+            solution: `Add missing AdaptationSet with id="${sourceId}" to SSAI manifest`,
+            severity: "HIGH",
+            message: `AdaptationSet with id="${sourceId}" missing in SSAI`,
+          });
+        }
+      } else {
+        // AdaptationSet without ID - match by position
+        const sourceIndex = sourceAS.indexOf(sourceAdaptationSet);
+        if (ssaiAS[sourceIndex]) {
+          this.compareRawNodes(
+            sourceAdaptationSet,
+            ssaiAS[sourceIndex],
+            differences
+          );
+        }
+      }
+    });
+
+    // Check for structural presence of ContentProtection
+    this.checkContentProtectionPresence(sourceAS, ssaiAS, differences);
+  }
+
+  // Match AdaptationSet children
+  matchAdaptationSetChildren(sourceNode, ssaiNode, differences) {
+    const sourceChildren = this.groupChildrenByName(sourceNode.children);
+    const ssaiChildren = this.groupChildrenByName(ssaiNode.children);
+
+    // Match Representations by ID
+    const sourceReps = sourceChildren["Representation"] || [];
+    const ssaiReps = ssaiChildren["Representation"] || [];
+    this.matchRepresentationsByID(sourceReps, ssaiReps, differences);
+
+    // Match other children generically
+    Object.keys(sourceChildren).forEach((childName) => {
+      if (childName !== "Representation") {
+        const sourceChildList = sourceChildren[childName];
+        const ssaiChildList = ssaiChildren[childName] || [];
+        this.matchGenericChildList(sourceChildList, ssaiChildList, differences);
+      }
+    });
+  }
+
+  // Match Representations by ID (exact matching)
+  matchRepresentationsByID(sourceReps, ssaiReps, differences) {
+    sourceReps.forEach((sourceRep) => {
+      const sourceId = sourceRep.attributes.get("id");
+
+      if (sourceId) {
+        // Find matching SSAI Representation by exact ID
+        const matchingSSAIRep = ssaiReps.find(
+          (rep) => rep.attributes.get("id") === sourceId
+        );
+
+        if (matchingSSAIRep) {
+          // Compare matched Representations
+          this.compareRawNodes(sourceRep, matchingSSAIRep, differences);
+        } else {
+          // Representation missing in SSAI
+          differences.push({
+            type: "MISSING_REPRESENTATION",
+            tag: "Representation",
+            attribute: "id",
+            sourceValue: sourceId,
+            ssaiValue: "Not Present",
+            solution: `Add missing Representation with id="${sourceId}" to SSAI manifest`,
+            severity: "HIGH",
+            message: `Representation with id="${sourceId}" missing in SSAI`,
+          });
+        }
+      } else {
+        // Representation without ID - match by position
+        const sourceIndex = sourceReps.indexOf(sourceRep);
+        if (ssaiReps[sourceIndex]) {
+          this.compareRawNodes(sourceRep, ssaiReps[sourceIndex], differences);
+        }
+      }
+    });
+  }
+
+  // Match Representation children
+  matchRepresentationChildren(sourceNode, ssaiNode, differences) {
+    this.matchGenericChildren(sourceNode, ssaiNode, differences);
+  }
+
+  // Compare SegmentTimeline (raw segment comparison)
+  compareSegmentTimeline(sourceNode, ssaiNode, differences) {
+    const sourceSegments = sourceNode.children.filter(
+      (child) => child.name === "S"
+    );
+    const ssaiSegments = ssaiNode.children.filter(
+      (child) => child.name === "S"
+    );
+
+    // Compare first segment 't' value (raw string comparison)
+    if (sourceSegments.length > 0 && ssaiSegments.length > 0) {
+      const sourceFirstT = sourceSegments[0].attributes.get("t");
+      const ssaiFirstT = ssaiSegments[0].attributes.get("t");
+
+      if (sourceFirstT && ssaiFirstT && sourceFirstT !== ssaiFirstT) {
+        differences.push({
+          type: "SEGMENT_TIMELINE_FIRST_T",
+          tag: "SegmentTimeline",
+          attribute: "First segment t",
+          sourceValue: sourceFirstT,
+          ssaiValue: ssaiFirstT,
+          solution: "Verify segment timeline alignment",
+          severity: "HIGH",
+          message: `First segment t value differs: ${sourceFirstT} vs ${ssaiFirstT}`,
+        });
+      }
+    }
+
+    // Compare timeline window (segment count and coverage)
+    if (sourceSegments.length !== ssaiSegments.length) {
+      differences.push({
+        type: "SEGMENT_TIMELINE_WINDOW",
+        tag: "SegmentTimeline",
+        attribute: "Timeline window",
+        sourceValue: `${sourceSegments.length} segments`,
+        ssaiValue: `${ssaiSegments.length} segments`,
+        solution: "Review segment timeline coverage differences",
+        severity: "MEDIUM",
+        message: `Timeline window differs: ${sourceSegments.length} vs ${ssaiSegments.length} segments`,
+      });
+    }
+  }
+
+  // Check ContentProtection structural presence
+  checkContentProtectionPresence(sourceAS, ssaiAS, differences) {
+    // Check each AdaptationSet for ContentProtection presence
+    sourceAS.forEach((sourceAdaptationSet, index) => {
+      const sourceId =
+        sourceAdaptationSet.attributes.get("id") || `index_${index}`;
+      const matchingSSAIAS =
+        ssaiAS.find(
+          (as) =>
+            as.attributes.get("id") === sourceAdaptationSet.attributes.get("id")
+        ) || ssaiAS[index];
+
+      if (matchingSSAIAS) {
+        const sourceHasCP = sourceAdaptationSet.children.some(
+          (child) => child.name === "ContentProtection"
+        );
+        const ssaiHasCP = matchingSSAIAS.children.some(
+          (child) => child.name === "ContentProtection"
+        );
+
+        if (!sourceHasCP && ssaiHasCP) {
+          differences.push({
+            type: "NEW_CONTENT_PROTECTION",
+            tag: `AdaptationSet[${sourceId}]`,
+            attribute: "ContentProtection",
+            sourceValue: "Not Present",
+            ssaiValue: "Present",
+            solution: "Review DRM addition in SSAI manifest",
+            severity: "INFO",
+            message: `ContentProtection added in SSAI AdaptationSet id="${sourceId}"`,
+          });
+        }
+
+        // Check Representation-level ContentProtection
+        const sourceReps = sourceAdaptationSet.children.filter(
+          (child) => child.name === "Representation"
+        );
+        const ssaiReps = matchingSSAIAS.children.filter(
+          (child) => child.name === "Representation"
+        );
+
+        sourceReps.forEach((sourceRep, repIndex) => {
+          const repId = sourceRep.attributes.get("id") || `index_${repIndex}`;
+          const matchingSSAIRep =
+            ssaiReps.find(
+              (rep) =>
+                rep.attributes.get("id") === sourceRep.attributes.get("id")
+            ) || ssaiReps[repIndex];
+
+          if (matchingSSAIRep) {
+            const sourceRepHasCP = sourceRep.children.some(
+              (child) => child.name === "ContentProtection"
+            );
+            const ssaiRepHasCP = matchingSSAIRep.children.some(
+              (child) => child.name === "ContentProtection"
+            );
+
+            if (!sourceRepHasCP && ssaiRepHasCP) {
+              differences.push({
+                type: "NEW_CONTENT_PROTECTION",
+                tag: `Representation[${repId}]`,
+                attribute: "ContentProtection",
+                sourceValue: "Not Present",
+                ssaiValue: "Present",
+                solution: "Review DRM addition in SSAI manifest",
+                severity: "INFO",
+                message: `ContentProtection added in SSAI Representation id="${repId}"`,
+              });
+            }
+          }
+        });
+      }
+    });
+  }
+
+  // Generic child matching
+  matchGenericChildren(sourceNode, ssaiNode, differences) {
+    const sourceChildren = this.groupChildrenByName(sourceNode.children);
+    const ssaiChildren = this.groupChildrenByName(ssaiNode.children);
+
+    Object.keys(sourceChildren).forEach((childName) => {
+      const sourceChildList = sourceChildren[childName];
+      const ssaiChildList = ssaiChildren[childName] || [];
+      this.matchGenericChildList(sourceChildList, ssaiChildList, differences);
+    });
+  }
+
+  // Generic child list matching
+  matchGenericChildList(sourceList, ssaiList, differences) {
+    // Match by position for generic elements
+    sourceList.forEach((sourceChild, index) => {
+      if (ssaiList[index]) {
+        this.compareRawNodes(sourceChild, ssaiList[index], differences);
+      } else {
+        differences.push({
+          type: "MISSING_ELEMENT",
+          tag: sourceChild.name,
+          attribute: "element",
+          sourceValue: "Present",
+          ssaiValue: "Not Present",
+          solution: `Add missing ${sourceChild.name} element`,
+          severity: "MEDIUM",
+          message: `Element "${sourceChild.name}" missing in SSAI`,
+        });
+      }
+    });
+  }
+
+  // Group children by element name
+  groupChildrenByName(children) {
+    const groups = {};
+    children.forEach((child) => {
+      if (!groups[child.name]) {
+        groups[child.name] = [];
+      }
+      groups[child.name].push(child);
+    });
+    return groups;
+  }
+
+  // Get attribute severity based on importance
+  getAttributeSeverity(attrName) {
+    const highSeverityAttrs = [
+      "id",
+      "start",
+      "duration",
+      "bandwidth",
+      "timescale",
+    ];
+    const mediumSeverityAttrs = [
+      "width",
+      "height",
+      "frameRate",
+      "codecs",
+      "mimeType",
+    ];
+
+    if (highSeverityAttrs.includes(attrName)) return "HIGH";
+    if (mediumSeverityAttrs.includes(attrName)) return "MEDIUM";
+    return "LOW";
   }
 
   performEnhancedComparison(sourceManifest, ssaiManifest) {
@@ -305,8 +1368,10 @@ export class ManifestComparison {
         cumulativeSSAITime = ssaiStart + ssaiDuration;
 
         // Check for significant drift
-        if (startDrift > 0.1) {
-          // 100ms tolerance
+        if (
+          startDrift >
+          this.config.ssaiRules.liveTolerances.timelineDriftTolerance
+        ) {
           differences.push({
             type: "TIMELINE_START_DRIFT",
             tag: `Period[${i}]`,
@@ -319,7 +1384,11 @@ export class ManifestComparison {
           });
         }
 
-        if (durationDrift > 0.1 && !this.isAdPeriod(ssaiPeriod)) {
+        if (
+          durationDrift >
+            this.config.ssaiRules.liveTolerances.timelineDriftTolerance &&
+          !this.isAdPeriod(ssaiPeriod)
+        ) {
           // Allow ad periods to have different durations
           differences.push({
             type: "TIMELINE_DURATION_DRIFT",
@@ -336,8 +1405,9 @@ export class ManifestComparison {
 
       // Check overall timeline drift
       const totalDrift = Math.abs(cumulativeSourceTime - cumulativeSSAITime);
-      if (totalDrift > 0.5) {
-        // 500ms total tolerance
+      const totalDriftTolerance =
+        this.config.ssaiRules.liveTolerances.timelineDriftTolerance * 2; // Double tolerance for total drift
+      if (totalDrift > totalDriftTolerance) {
         differences.push({
           type: "CUMULATIVE_TIMELINE_DRIFT",
           tag: "Timeline",
@@ -1810,7 +2880,7 @@ export class ManifestComparison {
     return typeof value === "number" ? value : null;
   }
 
-  // Enhanced method to handle duration values properly
+  // Enhanced method to handle duration values properly with comprehensive format support
   parseDurationToSeconds(duration) {
     // Handle typed values from enhanced extraction
     if (
@@ -1829,18 +2899,64 @@ export class ManifestComparison {
       return parseFloat(duration);
     }
 
-    // Parse ISO 8601 duration format (PT1H30M45S)
-    const regex =
+    // Comprehensive ISO 8601 duration format parsing
+    // Supports all valid formats: PT1H30M45S, PT3599S, PT16M40S, PT0.5H, PT30.5M, PT45.123S
+
+    // Primary regex for standard PT format
+    const primaryRegex =
       /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
-    const matches = duration.match(regex);
+    const primaryMatches = duration.match(primaryRegex);
 
-    if (!matches) return null;
+    if (primaryMatches) {
+      const hours = parseFloat(primaryMatches[1] || 0);
+      const minutes = parseFloat(primaryMatches[2] || 0);
+      const seconds = parseFloat(primaryMatches[3] || 0);
+      return hours * 3600 + minutes * 60 + seconds;
+    }
 
-    const hours = parseFloat(matches[1] || 0);
-    const minutes = parseFloat(matches[2] || 0);
-    const seconds = parseFloat(matches[3] || 0);
+    // Extended regex for formats with days (P1DT1H30M45S)
+    const extendedRegex =
+      /^P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/;
+    const extendedMatches = duration.match(extendedRegex);
 
-    return hours * 3600 + minutes * 60 + seconds;
+    if (extendedMatches) {
+      const days = parseFloat(extendedMatches[1] || 0);
+      const hours = parseFloat(extendedMatches[2] || 0);
+      const minutes = parseFloat(extendedMatches[3] || 0);
+      const seconds = parseFloat(extendedMatches[4] || 0);
+      return days * 86400 + hours * 3600 + minutes * 60 + seconds;
+    }
+
+    // Handle edge cases for malformed but parseable durations
+    // Some encoders produce PT3599.000S instead of PT59M59S
+    const edgeCaseRegex = /^PT(\d+(?:\.\d+)?)S$/;
+    const edgeCaseMatches = duration.match(edgeCaseRegex);
+
+    if (edgeCaseMatches) {
+      return parseFloat(edgeCaseMatches[1]);
+    }
+
+    // Handle minutes-only format: PT16M40S should be equivalent to PT1000S
+    const minutesOnlyRegex = /^PT(\d+(?:\.\d+)?)M(?:(\d+(?:\.\d+)?)S)?$/;
+    const minutesOnlyMatches = duration.match(minutesOnlyRegex);
+
+    if (minutesOnlyMatches) {
+      const minutes = parseFloat(minutesOnlyMatches[1] || 0);
+      const seconds = parseFloat(minutesOnlyMatches[2] || 0);
+      return minutes * 60 + seconds;
+    }
+
+    // Handle hours-only format: PT1H should be equivalent to PT3600S
+    const hoursOnlyRegex = /^PT(\d+(?:\.\d+)?)H$/;
+    const hoursOnlyMatches = duration.match(hoursOnlyRegex);
+
+    if (hoursOnlyMatches) {
+      const hours = parseFloat(hoursOnlyMatches[1]);
+      return hours * 3600;
+    }
+
+    console.warn(`Failed to parse duration: ${duration} - unsupported format`);
+    return null;
   }
 
   // Enhanced method to handle URL resolution
@@ -2857,7 +3973,7 @@ export class ManifestComparison {
     return issue.solution || "Review and fix the identified semantic issue";
   }
 
-  // Detect attributes and elements that are not covered in our validation
+  // Detect attributes and elements that are not covered in our validation (enhanced)
   detectUncoveredAttributes(sourceManifest, ssaiManifest) {
     const uncoveredItems = [];
 
@@ -2868,8 +3984,13 @@ export class ManifestComparison {
       const sourceAttributes = this.extractAllAttributes(sourceManifest);
       const ssaiAttributes = this.extractAllAttributes(ssaiManifest);
 
-      // Known attributes that are covered in our validation
+      // Get all elements from both manifests
+      const sourceElements = this.extractAllElements(sourceManifest);
+      const ssaiElements = this.extractAllElements(ssaiManifest);
+
+      // Known attributes that are covered in our validation (comprehensive list)
       const knownAttributes = new Set([
+        // MPD level attributes
         "type",
         "mediaPresentationDuration",
         "minBufferTime",
@@ -2879,50 +4000,132 @@ export class ManifestComparison {
         "minimumUpdatePeriod",
         "timeShiftBufferDepth",
         "suggestedPresentationDelay",
-        "UTCTiming",
+        "maxSegmentDuration",
+        "xmlns",
+        "xmlns:xsi",
+        "xsi:schemaLocation",
+
+        // Period attributes
         "id",
         "start",
         "duration",
+        "bitstreamSwitching",
+
+        // AdaptationSet attributes
         "contentType",
         "mimeType",
         "codecs",
         "lang",
         "segmentAlignment",
+        "subsegmentAlignment",
+        "subsegmentStartsWithSAP",
+        "group",
+        "par",
+        "minBandwidth",
+        "maxBandwidth",
+        "minWidth",
+        "maxWidth",
+        "minHeight",
+        "maxHeight",
+        "minFrameRate",
+        "maxFrameRate",
+        "startWithSAP",
+        "Label",
+
+        // Representation attributes
         "bandwidth",
         "width",
         "height",
         "frameRate",
         "audioSamplingRate",
+        "sar",
+        "maxPlayoutRate",
+        "codingDependency",
+        "scanType",
+
+        // SegmentTemplate attributes
         "timescale",
+        "duration",
         "startNumber",
+        "endNumber",
+        "presentationTimeOffset",
+        "indexRange",
+        "indexRangeExact",
+        "availabilityTimeOffset",
+        "availabilityTimeComplete",
         "initialization",
         "media",
+        "index",
+        "bitstreamSwitching",
+
+        // ContentProtection attributes
         "schemeIdUri",
         "value",
-        "pssh",
         "default_KID",
-        "Role",
-        "Accessibility",
-        "Label",
-        "AudioChannelConfiguration",
-        "Location",
-        "PatchLocation",
-        "ServiceDescription",
-        "EssentialProperty",
-        "SupplementalProperty",
-        "EventStream",
-        "InbandEventStream",
-        "ContentProtection",
+        "cenc:default_KID",
+
+        // Descriptor attributes (Role, Accessibility, etc.)
+        "schemeIdUri",
+        "value",
+
+        // Event attributes
+        "presentationTime",
+        "messageData",
+
+        // Common attributes
+        "href",
+        "actuate",
+        "show",
+      ]);
+
+      // Known elements that are covered in our validation
+      const knownElements = new Set([
+        "MPD",
+        "Period",
+        "AdaptationSet",
+        "Representation",
         "SegmentTemplate",
         "SegmentTimeline",
         "SegmentBase",
         "SegmentList",
+        "SegmentURL",
+        "S", // SegmentTimeline S elements
         "BaseURL",
+        "ContentProtection",
+        "Role",
+        "Accessibility",
+        "EssentialProperty",
+        "SupplementalProperty",
+        "Viewpoint",
+        "AudioChannelConfiguration",
+        "EventStream",
+        "Event",
+        "InbandEventStream",
+        "UTCTiming",
+        "Location",
+        "PatchLocation",
+        "ServiceDescription",
+        "Latency",
+        "PlaybackRate",
+        "AssetIdentifier",
+        "Initialization",
+        "RepresentationIndex",
+        // DRM elements
+        "pssh",
+        "pro",
+        "license",
+        "certificate",
+        "metadata",
+        "mas",
+        "laurl",
       ]);
 
       // Check for uncovered attributes in source
       sourceAttributes.forEach((attr) => {
-        if (!knownAttributes.has(attr.name)) {
+        if (
+          !knownAttributes.has(attr.name) &&
+          !this.isNamespaceAttribute(attr.name)
+        ) {
           uncoveredItems.push({
             type: "UNCOVERED_ATTRIBUTE",
             tag: attr.element || "Unknown",
@@ -2939,10 +4142,11 @@ export class ManifestComparison {
         }
       });
 
-      // Check for uncovered attributes in SSAI
+      // Check for uncovered attributes in SSAI (new attributes)
       ssaiAttributes.forEach((attr) => {
         if (
           !knownAttributes.has(attr.name) &&
+          !this.isNamespaceAttribute(attr.name) &&
           !sourceAttributes.find((a) => a.name === attr.name)
         ) {
           uncoveredItems.push({
@@ -2958,11 +4162,128 @@ export class ManifestComparison {
           });
         }
       });
+
+      // Check for uncovered elements in source
+      sourceElements.forEach((elem) => {
+        if (
+          !knownElements.has(elem.name) &&
+          !this.isNamespaceElement(elem.name)
+        ) {
+          uncoveredItems.push({
+            type: "UNCOVERED_ELEMENT",
+            tag: elem.name,
+            attribute: "element",
+            sourceValue: "Present",
+            ssaiValue: ssaiElements.find((e) => e.name === elem.name)
+              ? "Present"
+              : "Missing",
+            solution:
+              "Review this element - it may not be covered in current validation logic",
+            severity: "NOT_FOUND",
+            message: `Element "${elem.name}" not covered in validation schema`,
+          });
+        }
+      });
+
+      // Check for new elements in SSAI
+      ssaiElements.forEach((elem) => {
+        if (
+          !knownElements.has(elem.name) &&
+          !this.isNamespaceElement(elem.name) &&
+          !sourceElements.find((e) => e.name === elem.name)
+        ) {
+          uncoveredItems.push({
+            type: "NEW_SSAI_ELEMENT",
+            tag: elem.name,
+            attribute: "element",
+            sourceValue: "Not Present",
+            ssaiValue: "Present",
+            solution:
+              "Review this new SSAI element - it may need validation coverage",
+            severity: "NOT_FOUND",
+            message: `New element "${elem.name}" found in SSAI manifest`,
+          });
+        }
+      });
     } catch (error) {
       console.warn("Error detecting uncovered attributes:", error);
     }
 
     return uncoveredItems;
+  }
+
+  // Helper method to check if an attribute is a namespace declaration
+  isNamespaceAttribute(attrName) {
+    return (
+      attrName.startsWith("xmlns") ||
+      attrName.includes("schemaLocation") ||
+      attrName.startsWith("xsi:")
+    );
+  }
+
+  // Helper method to check if an element is a namespace-related element
+  isNamespaceElement(elemName) {
+    // Filter out namespace prefixes and common XML elements
+    return (
+      elemName.includes(":") &&
+      !elemName.startsWith("cenc:") &&
+      !elemName.startsWith("mspr:")
+    );
+  }
+
+  // Extract all elements from a manifest
+  extractAllElements(manifest) {
+    const elements = [];
+
+    if (!manifest) return elements;
+
+    try {
+      // If it's an XML document, traverse it
+      if (
+        manifest.nodeType === Node.DOCUMENT_NODE ||
+        manifest.nodeType === Node.ELEMENT_NODE
+      ) {
+        this.traverseXMLForElements(manifest, elements);
+      }
+    } catch (error) {
+      console.warn("Error extracting elements:", error);
+    }
+
+    return elements;
+  }
+
+  // Traverse XML to find all elements
+  traverseXMLForElements(node, elements) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const elementName = node.tagName || node.localName || node.nodeName;
+      if (elementName && !elements.find((e) => e.name === elementName)) {
+        elements.push({
+          name: elementName,
+          path: this.getElementPath(node),
+        });
+      }
+    }
+
+    // Recursively traverse child nodes
+    if (node.childNodes) {
+      for (let i = 0; i < node.childNodes.length; i++) {
+        this.traverseXMLForElements(node.childNodes[i], elements);
+      }
+    }
+  }
+
+  // Get the path to an element for better identification
+  getElementPath(node) {
+    const path = [];
+    let current = node;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const tagName = current.tagName || current.localName || current.nodeName;
+      path.unshift(tagName);
+      current = current.parentNode;
+    }
+
+    return path.join(" > ");
   }
 
   // Extract all attributes from a manifest

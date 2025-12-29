@@ -54,6 +54,14 @@
               <span class="view-icon">📄</span>
               <span class="view-label">XML</span>
             </button>
+            <button
+              @click="setActiveView('profile')"
+              :class="['view-toggle-btn', { active: activeView === 'profile' }]"
+              title="Profile View - Video quality, resolution, codecs, bitrates"
+            >
+              <span class="view-icon">📊</span>
+              <span class="view-label">Profile</span>
+            </button>
           </div>
 
           <!-- Table View -->
@@ -83,6 +91,265 @@
             class="view-content xml-view-wrapper"
           >
             <pre class="xml-display">{{ formattedManifest }}</pre>
+          </div>
+
+          <!-- Profile View -->
+          <div
+            v-show="activeView === 'profile'"
+            class="view-content profile-view-wrapper"
+          >
+            <div v-if="!mpdProfile" class="profile-loading">
+              <p>Loading profile information...</p>
+            </div>
+            <div v-else class="profile-content">
+              <!-- General Information -->
+              <div class="profile-section">
+                <h4
+                  class="profile-section-title"
+                  @click="toggleProfileSection('general')"
+                >
+                  <span class="collapse-icon">{{
+                    profileSections.general ? "▼" : "▶"
+                  }}</span>
+                  General Information
+                </h4>
+                <div
+                  v-show="profileSections.general"
+                  class="profile-section-content"
+                >
+                  <div class="profile-grid">
+                    <div class="profile-item">
+                      <span class="profile-label">Type:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.general.type
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Profiles:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.general.profiles
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Duration:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.general.mediaPresentationDuration
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Min Buffer Time:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.general.minBufferTime
+                      }}</span>
+                    </div>
+                    <div
+                      class="profile-item"
+                      v-if="mpdProfile.streaming.isLive"
+                    >
+                      <span class="profile-label">Availability Start:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.general.availabilityStartTime
+                      }}</span>
+                    </div>
+                    <div
+                      class="profile-item"
+                      v-if="mpdProfile.streaming.isLive"
+                    >
+                      <span class="profile-label">Time Shift Buffer:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.general.timeShiftBufferDepth
+                      }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Video Tracks -->
+              <div class="profile-section" v-if="mpdProfile.video.length > 0">
+                <h4
+                  class="profile-section-title"
+                  @click="toggleProfileSection('video')"
+                >
+                  <span class="collapse-icon">{{
+                    profileSections.video ? "▼" : "▶"
+                  }}</span>
+                  Video Tracks ({{ mpdProfile.video.length }})
+                </h4>
+                <div
+                  v-show="profileSections.video"
+                  class="profile-section-content"
+                >
+                  <div class="profile-table-wrapper">
+                    <table class="profile-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>Resolution</th>
+                          <th>Bitrate</th>
+                          <th>Frame Rate</th>
+                          <th>Codec</th>
+                          <th>MIME Type</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="video in mpdProfile.video" :key="video.id">
+                          <td>{{ video.id }}</td>
+                          <td>{{ video.width }}x{{ video.height }}</td>
+                          <td>{{ formatBitrate(video.bandwidth) }}</td>
+                          <td>{{ video.frameRate }}</td>
+                          <td>{{ video.codecs }}</td>
+                          <td>{{ video.mimeType }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Audio Tracks -->
+              <div class="profile-section" v-if="mpdProfile.audio.length > 0">
+                <h4
+                  class="profile-section-title"
+                  @click="toggleProfileSection('audio')"
+                >
+                  <span class="collapse-icon">{{
+                    profileSections.audio ? "▼" : "▶"
+                  }}</span>
+                  Audio Tracks ({{ mpdProfile.audio.length }})
+                </h4>
+                <div
+                  v-show="profileSections.audio"
+                  class="profile-section-content"
+                >
+                  <div class="profile-table-wrapper">
+                    <table class="profile-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>Language</th>
+                          <th>Bitrate</th>
+                          <th>Sample Rate</th>
+                          <th>Codec</th>
+                          <th>Channels</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="audio in mpdProfile.audio" :key="audio.id">
+                          <td>{{ audio.id }}</td>
+                          <td>{{ audio.lang || "und" }}</td>
+                          <td>{{ formatBitrate(audio.bandwidth) }}</td>
+                          <td>
+                            {{
+                              audio.audioSamplingRate
+                                ? audio.audioSamplingRate + " Hz"
+                                : ""
+                            }}
+                          </td>
+                          <td>{{ audio.codecs }}</td>
+                          <td>
+                            {{ audio.audioChannelConfiguration?.value || "" }}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <!-- DRM Information -->
+              <div class="profile-section" v-if="mpdProfile.drm.length > 0">
+                <h4
+                  class="profile-section-title"
+                  @click="toggleProfileSection('drm')"
+                >
+                  <span class="collapse-icon">{{
+                    profileSections.drm ? "▼" : "▶"
+                  }}</span>
+                  DRM Systems ({{ mpdProfile.drm.length }})
+                </h4>
+                <div
+                  v-show="profileSections.drm"
+                  class="profile-section-content"
+                >
+                  <div class="profile-table-wrapper">
+                    <table class="profile-table">
+                      <thead>
+                        <tr>
+                          <th>System</th>
+                          <th>Scheme ID URI</th>
+                          <th>Default KID</th>
+                          <th>Content Type</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="drm in mpdProfile.drm" :key="drm.index">
+                          <td>{{ drm.systemName }}</td>
+                          <td class="small-text">{{ drm.schemeIdUri }}</td>
+                          <td class="small-text">{{ drm.defaultKID }}</td>
+                          <td>{{ drm.contentType }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Technical Summary -->
+              <div class="profile-section">
+                <h4
+                  class="profile-section-title"
+                  @click="toggleProfileSection('technical')"
+                >
+                  <span class="collapse-icon">{{
+                    profileSections.technical ? "▼" : "▶"
+                  }}</span>
+                  Technical Summary
+                </h4>
+                <div
+                  v-show="profileSections.technical"
+                  class="profile-section-content"
+                >
+                  <div class="profile-grid">
+                    <div class="profile-item">
+                      <span class="profile-label">Stream Type:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.streaming.isLive ? "Live" : "VOD"
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Total Periods:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.technical.totalPeriods
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Video Resolutions:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.technical.videoResolutions.join(", ")
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Video Codecs:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.technical.videoCodecs.join(", ")
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Audio Codecs:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.technical.audioCodecs.join(", ")
+                      }}</span>
+                    </div>
+                    <div class="profile-item">
+                      <span class="profile-label">Has UTC Timing:</span>
+                      <span class="profile-value">{{
+                        mpdProfile.streaming.hasUTCTiming ? "Yes" : "No"
+                      }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -128,6 +395,14 @@ export default {
     return {
       mpdInfoExpanded: false, // Start collapsed to save space
       activeView: "table", // Default to table view
+      mpdProfile: null, // Profile information
+      profileSections: {
+        general: true,
+        video: true,
+        audio: true,
+        drm: false,
+        technical: false,
+      },
     };
   },
   emits: ["update:url", "load-manifest", "play-stream", "stop-stream"],
@@ -151,6 +426,46 @@ export default {
         return JSON.stringify(value, null, 2);
       }
       return value;
+    },
+    toggleProfileSection(section) {
+      this.profileSections[section] = !this.profileSections[section];
+    },
+    formatBitrate(bandwidth) {
+      if (!bandwidth) return "-";
+      if (bandwidth >= 1000000) {
+        return (bandwidth / 1000000).toFixed(1) + " Mbps";
+      } else if (bandwidth >= 1000) {
+        return (bandwidth / 1000).toFixed(0) + " kbps";
+      }
+      return bandwidth + " bps";
+    },
+    async extractProfile() {
+      if (!this.manifest) {
+        this.mpdProfile = null;
+        return;
+      }
+
+      try {
+        // Import the ManifestService
+        const { ManifestService } = await import(
+          "../services/manifestService.js"
+        );
+        const manifestService = new ManifestService();
+
+        // Extract profile information
+        this.mpdProfile = manifestService.extractMPDProfile(this.manifest);
+      } catch (error) {
+        console.error("Error extracting MPD profile:", error);
+        this.mpdProfile = null;
+      }
+    },
+  },
+  watch: {
+    manifest: {
+      handler() {
+        this.extractProfile();
+      },
+      immediate: true,
     },
   },
 };
@@ -779,5 +1094,151 @@ export default {
 /* Smooth transitions for collapsible content */
 .mpd-content {
   transition: all 0.3s ease;
+}
+
+/* Profile View Styles */
+.profile-view-wrapper {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.profile-content {
+  padding: 16px;
+  background: #f9fafb;
+}
+
+.profile-section {
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.profile-section-title {
+  background: #f3f4f6;
+  padding: 12px 16px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e5e7eb;
+  transition: background-color 0.2s ease;
+}
+
+.profile-section-title:hover {
+  background: #e5e7eb;
+}
+
+.profile-section-content {
+  padding: 16px;
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+
+.profile-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+
+.profile-label {
+  font-weight: 600;
+  color: #374151;
+  font-size: 13px;
+}
+
+.profile-value {
+  color: #6b7280;
+  font-size: 13px;
+  text-align: right;
+  word-break: break-word;
+}
+
+.profile-table-wrapper {
+  overflow-x: auto;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+}
+
+.profile-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 600px;
+}
+
+.profile-table th {
+  background: #f3f4f6;
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #374151;
+  border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+.profile-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #6b7280;
+  vertical-align: top;
+}
+
+.profile-table tr:hover {
+  background: #f9fafb;
+}
+
+.profile-table .small-text {
+  font-size: 11px;
+  font-family: monospace;
+  word-break: break-all;
+  max-width: 200px;
+}
+
+.profile-loading {
+  padding: 40px;
+  text-align: center;
+  color: #6b7280;
+  font-style: italic;
+}
+
+/* Responsive adjustments for profile view */
+@media (max-width: 768px) {
+  .profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .profile-value {
+    text-align: left;
+  }
+
+  .profile-table-wrapper {
+    font-size: 12px;
+  }
+
+  .profile-table th,
+  .profile-table td {
+    padding: 8px 6px;
+  }
 }
 </style>
