@@ -16,28 +16,53 @@
 
       <!-- Refetch Settings -->
       <div class="refetch-settings">
-        <label for="refetchInterval">Refetch Interval:</label>
-        <input
-          id="refetchInterval"
-          v-model.number="refetchInterval"
-          @change="updateRefetchInterval"
-          type="number"
-          min="1"
-          max="60"
-          class="interval-input"
-        />
-        <span class="interval-unit">seconds</span>
-        <button
-          @click="toggleAutoRefetch"
-          :class="['toggle-button', { active: isAutoRefetch }]"
-        >
-          {{ isAutoRefetch ? "Stop Auto-Refetch" : "Start Auto-Refetch" }}
-        </button>
+        <div class="dash-compliant-info">
+          <strong>DASH-Compliant Polling:</strong> Refresh interval is
+          automatically determined by MPD's <code>minimumUpdatePeriod</code>
+        </div>
+        <div class="controls-row">
+          <label for="refetchInterval"
+            >Fallback Interval (when MPD has no minimumUpdatePeriod):</label
+          >
+          <input
+            id="refetchInterval"
+            v-model.number="refetchInterval"
+            @change="updateRefetchInterval"
+            type="number"
+            min="1"
+            max="60"
+            class="interval-input"
+            disabled
+            title="Interval is now determined by MPD's minimumUpdatePeriod"
+          />
+          <span class="interval-unit">seconds (fallback only)</span>
+          <button
+            @click="toggleAutoRefetch"
+            :class="['toggle-button', { active: isAutoRefetch }]"
+          >
+            {{ isAutoRefetch ? "Stop Auto-Refetch" : "Start Auto-Refetch" }}
+          </button>
+          <button
+            @click="pauseAutoRefetch"
+            :class="['pause-button', { active: isPaused }]"
+            v-if="isAutoRefetch"
+          >
+            {{ isPaused ? "Resume" : "Pause" }}
+            <span
+              v-if="isPaused && pendingRows.length > 0"
+              class="pending-count"
+            >
+              ({{ pendingRows.length }} pending)
+            </span>
+          </button>
+        </div>
         <span class="auto-refetch-status">
           {{
             isAutoRefetch
-              ? "Auto-refetch enabled by default"
-              : "Auto-refetch disabled"
+              ? isPaused
+                ? "DASH-compliant polling paused (click Resume to continue)"
+                : "DASH-compliant polling enabled (interval from MPD's minimumUpdatePeriod)"
+              : "DASH-compliant polling disabled"
           }}
         </span>
       </div>
@@ -69,32 +94,55 @@
     <div v-if="comparisonHistory.length > 0" class="comparison-table-section">
       <div class="table-header">
         <h3>Comparison Analysis</h3>
-        <div class="update-info">
-          <div class="legend">
-            <span class="legend-item">
-              <span class="legend-color latest"></span>
-              Latest Update
-            </span>
-            <span class="legend-item">
-              <span class="legend-color changed"></span>
-              Values Changed
-            </span>
-            <span class="legend-item">
-              <span class="legend-color normal"></span>
-              No Changes
+        <div class="scroll-hint">
+          <span class="scroll-indicator"
+            >← Scroll horizontally to see all columns →</span
+          >
+        </div>
+        <div class="table-controls">
+          <div class="view-toggle">
+            <button
+              @click="isDetailedView = false"
+              :class="['view-toggle-button', { active: !isDetailedView }]"
+            >
+              Normal View
+            </button>
+            <button
+              @click="isDetailedView = true"
+              :class="['view-toggle-button', { active: isDetailedView }]"
+            >
+              Detailed View
+            </button>
+          </div>
+          <div class="update-info">
+            <div class="legend">
+              <span class="legend-item">
+                <span class="legend-color latest"></span>
+                Latest Update
+              </span>
+              <span class="legend-item">
+                <span class="legend-color changed"></span>
+                Values Changed
+              </span>
+              <span class="legend-item">
+                <span class="legend-color normal"></span>
+                No Changes
+              </span>
+            </div>
+            <span class="last-update">Last Updated: {{ lastUpdateTime }}</span>
+            <span
+              class="auto-refetch-indicator"
+              :class="{ active: isAutoRefetch && !isPaused, paused: isPaused }"
+            >
+              {{
+                isAutoRefetch
+                  ? isPaused
+                    ? "⏸️ DASH-compliant polling paused"
+                    : "🔄 DASH-compliant polling (interval from MPD's minimumUpdatePeriod)"
+                  : "⏸️ DASH-compliant polling disabled"
+              }}
             </span>
           </div>
-          <span class="last-update">Last Updated: {{ lastUpdateTime }}</span>
-          <span
-            class="auto-refetch-indicator"
-            :class="{ active: isAutoRefetch }"
-          >
-            {{
-              isAutoRefetch
-                ? "🔄 Auto-refreshing every " + refetchInterval + "s"
-                : "⏸️ Auto-refresh paused"
-            }}
-          </span>
         </div>
       </div>
       <div class="table-wrapper">
@@ -102,9 +150,7 @@
           <thead>
             <tr>
               <th>Time</th>
-              <th>Total Periods</th>
-              <th>Content Periods</th>
-              <th>Ad Periods</th>
+              <th>Periods (Total/Content/Ad)</th>
               <th>Number Period Added (provide Id)</th>
               <th>Number of Period Removed</th>
               <th>Number of Segments Removed</th>
@@ -117,6 +163,12 @@
               <th>Period Segment Added (Audio)</th>
               <th>Period Segment Removed (Audio)</th>
               <th>Is Segment Timing Correct?</th>
+              <th>Download Time vs Segment Duration</th>
+              <th>DRM Protection Status</th>
+              <th>DRM Signaling</th>
+              <th>Period Start Time Comparison</th>
+              <th>Segments Same Across All Profiles</th>
+              <th>Period IDs Same as Previous MPD</th>
               <th>Profile</th>
               <th>Time Diff(s)</th>
               <th>Switch Profile</th>
@@ -124,30 +176,96 @@
           </thead>
           <tbody>
             <tr
-              v-for="(historyEntry, index) in comparisonHistory"
-              :key="index"
+              v-for="(historyEntry, displayIndex) in comparisonHistory
+                .slice()
+                .reverse()"
+              :key="comparisonHistory.length - 1 - displayIndex"
               :class="{
-                'latest-row': index === 0,
+                'latest-row': displayIndex === 0,
                 'changed-row': hasRowChanges(
                   historyEntry,
-                  comparisonHistory[index + 1]
+                  comparisonHistory.slice().reverse()[displayIndex + 1]
                 ),
               }"
             >
-              <td class="metric-value timestamp-cell">
+              <td
+                :class="[
+                  'metric-value',
+                  'timestamp-cell',
+                  {
+                    'duration-inconsistent': !isMpdDurationConsistent(
+                      historyEntry.mpdDuration,
+                      comparisonHistory.length - 1 - displayIndex
+                    ),
+                  },
+                ]"
+              >
                 {{ historyEntry.timestamp }}
-              </td>
-              <td class="metric-value">
-                {{ getHistoryMetricValue(historyEntry, "Total Periods") }}
-              </td>
-              <td class="metric-value">
-                {{ getHistoryMetricValue(historyEntry, "Content Periods") }}
-              </td>
-              <td class="metric-value">
-                {{ getHistoryMetricValue(historyEntry, "Ad Periods") }}
+                <span
+                  v-if="historyEntry.mpdDuration !== null"
+                  class="mpd-duration"
+                >
+                  ({{ Math.round(historyEntry.mpdDuration) }}s refresh)
+                </span>
+                <span v-else class="mpd-duration-missing">
+                  (refresh interval unknown)
+                </span>
               </td>
               <td
-                class="metric-value"
+                :class="[
+                  'metric-value',
+                  'combined-periods-cell',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                <div v-if="isDetailedView" class="detailed-periods-view">
+                  <div class="periods-content">
+                    <div
+                      v-for="(period, index) in getPeriodsForDisplay()"
+                      :key="index"
+                      class="period-item"
+                      :class="{ 'duplicate-period-id': period.isDuplicate }"
+                    >
+                      <div class="period-content">
+                        <div
+                          v-if="period.expanded"
+                          class="expanded-details-header"
+                        >
+                          <strong>Expanded Details:</strong>
+                        </div>
+                        <div
+                          v-if="period.expanded"
+                          class="expanded-details-content"
+                        >
+                          {{ period.full }}
+                        </div>
+                        <span v-if="!period.expanded">{{
+                          period.truncated
+                        }}</span>
+                      </div>
+                      <button
+                        class="expand-btn"
+                        @click="togglePeriodExpansion(index)"
+                        :title="
+                          period.expanded
+                            ? 'Click to collapse'
+                            : 'Click to expand full details'
+                        "
+                      >
+                        {{ period.expanded ? "▼" : "▶" }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="normal-periods-view">
+                  {{ getCombinedNormalPeriods(historyEntry) }}
+                </div>
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
                 :title="
                   getHistoryMetricTooltip(
                     historyEntry,
@@ -156,14 +274,22 @@
                 "
               >
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Number Period Added (provide Id)"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number Period Added (provide Id)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number Period Added (provide Id)"
+                      )
                 }}
               </td>
               <td
-                class="metric-value"
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
                 :title="
                   getHistoryMetricTooltip(
                     historyEntry,
@@ -172,127 +298,389 @@
                 "
               >
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Number of Period Removed"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number of Period Removed"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number of Period Removed"
+                      )
                 }}
               </td>
               <td class="metric-value">
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Number of Segments Removed"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Removed"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Removed"
+                      )
                 }}
               </td>
               <td class="metric-value">
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Number of Segments Added"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Added"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Added"
+                      )
                 }}
               </td>
               <td
-                class="metric-value"
-                :class="
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
                   getHistoryMetricStatusClass(
                     historyEntry,
                     'Profile same in all Periods'
-                  )
-                "
+                  ),
+                ]"
               >
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Profile same in all Periods"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Profile same in all Periods"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Profile same in all Periods"
+                      )
                 }}
               </td>
               <td
-                class="metric-value"
-                :class="
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
                   getHistoryMetricStatusClass(
                     historyEntry,
                     'Video and Audio Duration are Same'
-                  )
-                "
+                  ),
+                ]"
               >
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Video and Audio Duration are Same"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Video and Audio Duration are Same"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Video and Audio Duration are Same"
+                      )
                 }}
               </td>
               <td
-                class="metric-value"
-                :title="
-                  getHistoryMetricTooltip(historyEntry, 'Start Time Correct?')
-                "
-                :class="
+                :class="[
+                  'metric-value',
+                  'start-time-cell',
+                  { 'detailed-content': isDetailedView },
                   getHistoryMetricStatusClass(
                     historyEntry,
                     'Start Time Correct?'
-                  )
+                  ),
+                ]"
+                :title="
+                  getHistoryMetricTooltip(historyEntry, 'Start Time Correct?')
                 "
               >
-                {{ getHistoryMetricValue(historyEntry, "Start Time Correct?") }}
+                <div v-if="isDetailedView" class="detailed-start-time-view">
+                  <div class="start-time-content">
+                    <div
+                      v-for="(startTime, index) in getStartTimesForDisplay(
+                        comparisonHistory.length - 1 - displayIndex
+                      )"
+                      :key="`${
+                        comparisonHistory.length - 1 - displayIndex
+                      }_${index}`"
+                      class="start-time-item"
+                    >
+                      <div class="start-time-content">
+                        <div
+                          v-if="startTime.expanded"
+                          class="expanded-details-header"
+                        >
+                          <strong>Expanded Details:</strong>
+                        </div>
+                        <div
+                          v-if="startTime.expanded"
+                          class="expanded-details-content"
+                        >
+                          {{ startTime.full }}
+                        </div>
+                        <span v-if="!startTime.expanded">{{
+                          startTime.truncated
+                        }}</span>
+                      </div>
+                      <button
+                        class="expand-btn"
+                        @click="
+                          toggleStartTimeExpansion(
+                            comparisonHistory.length - 1 - displayIndex,
+                            index
+                          )
+                        "
+                        :title="
+                          startTime.expanded
+                            ? 'Click to collapse'
+                            : 'Click to expand full details'
+                        "
+                      >
+                        {{ startTime.expanded ? "▼" : "▶" }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="normal-start-time-view">
+                  {{ getCombinedNormalStartTime(historyEntry) }}
+                </div>
               </td>
-              <td class="metric-value">
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
                 {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Period Segment Added (Video)"
-                  )
-                }}
-              </td>
-              <td class="metric-value">
-                {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Period Segment Removed (Video)"
-                  )
-                }}
-              </td>
-              <td class="metric-value">
-                {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Period Segment Added (Audio)"
-                  )
-                }}
-              </td>
-              <td class="metric-value">
-                {{
-                  getHistoryMetricValue(
-                    historyEntry,
-                    "Period Segment Removed (AUDIO)"
-                  )
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Video)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Video)"
+                      )
                 }}
               </td>
               <td
-                class="metric-value"
-                :class="
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (Video)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (Video)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Audio)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Audio)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (AUDIO)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (AUDIO)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
                   getHistoryMetricStatusClass(
                     historyEntry,
                     'Is Segment Timing Correct?'
-                  )
-                "
+                  ),
+                ]"
               >
                 {{
-                  getHistoryMetricValue(
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Is Segment Timing Correct?"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Is Segment Timing Correct?"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
                     historyEntry,
-                    "Is Segment Timing Correct?"
-                  )
+                    'Download Time vs Segment Duration'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Download Time vs Segment Duration"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Download Time vs Segment Duration"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'DRM Protection Status'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "DRM Protection Status"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "DRM Protection Status"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(historyEntry, 'DRM Signaling'),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "DRM Signaling"
+                      )
+                    : getHistoryMetricValue(historyEntry, "DRM Signaling")
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Period Start Time Comparison'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Start Time Comparison"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Start Time Comparison"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Segments Same Across All Profiles'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Segments Same Across All Profiles"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Segments Same Across All Profiles"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Period IDs Same as Previous MPD'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period IDs Same as Previous MPD"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period IDs Same as Previous MPD"
+                      )
                 }}
               </td>
               <td class="metric-value">
                 {{ getHistoryMetricValue(historyEntry, "Profile") }}
               </td>
-              <td class="metric-value">
-                {{ getHistoryMetricValue(historyEntry, "Time Diff(s)") }}
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Time Diff(s)"
+                      )
+                    : getHistoryMetricValue(historyEntry, "Time Diff(s)")
+                }}
               </td>
               <td class="metric-value">
                 {{ getHistoryMetricValue(historyEntry, "Switch Profile") }}
@@ -325,8 +713,9 @@ export default {
   data() {
     return {
       manifestUrl: "",
-      refetchInterval: 3, // Default 3 seconds
+      refetchInterval: 5, // Fallback interval (5 seconds) - only used when MPD has no minimumUpdatePeriod
       isAutoRefetch: true, // Auto-refetch enabled by default
+      isPaused: false, // Pause state for auto-refetch
       isLoading: false,
       error: null,
 
@@ -337,6 +726,7 @@ export default {
       // Comparison data
       comparisonData: [],
       comparisonHistory: [], // Store all historical data
+      pendingRows: [], // Store rows that were fetched during pause
       lastUpdateTime: "",
 
       // Global segment changes (derived from period-level analysis)
@@ -349,6 +739,18 @@ export default {
       player: null,
       playerStatus: "Ready to play",
       dashPlayerService: new DashPlayerService(),
+
+      // View mode toggle
+      isDetailedView: false,
+
+      // Expand/collapse data for detailed view
+      expandData: {
+        periods: {},
+        startTimes: {},
+      },
+
+      // MPD refresh interval tracking
+      previousMpdPublishTime: null,
     };
   },
 
@@ -414,15 +816,52 @@ export default {
         // Perform analysis
         const analysis = await this.performComparisonAnalysis(mpdInfo);
 
-        // Update comparison data
+        // Update comparison data (always update this for internal state)
         this.comparisonData = analysis;
         this.lastUpdateTime = new Date().toLocaleTimeString();
 
-        // Add to history with timestamp - keep ALL entries for the entire session
-        this.comparisonHistory.unshift({
+        // Add to history with timestamp and MPD refresh interval - keep ALL entries for the entire session
+        const mpdRefreshInterval = this.extractMpdDuration(
+          this.currentManifest
+        );
+        console.log(
+          "MPD Refresh Interval extracted:",
+          mpdRefreshInterval,
+          "seconds"
+        );
+
+        // Create the new row data
+        const newRowData = {
           timestamp: new Date().toLocaleTimeString(),
+          mpdDuration: mpdRefreshInterval, // Keep same property name for compatibility
           data: [...analysis], // Create a copy of the analysis
-        });
+        };
+
+        // Check pause state to determine where to store the data
+        console.log(`🔄 ANALYZE MANIFEST - isPaused: ${this.isPaused}`);
+        if (this.isPaused) {
+          console.log(
+            "🔄 PAUSED: Adding row to pending queue instead of table"
+          );
+          console.log(`🔄 Row data being queued:`, newRowData);
+          this.pendingRows.push(newRowData); // Add to bottom of pending queue
+          console.log(`📦 Pending rows count: ${this.pendingRows.length}`);
+          console.log(
+            `📦 All pending rows timestamps:`,
+            this.pendingRows.map((row) => row.timestamp)
+          );
+          return; // Don't add to table when paused
+        }
+
+        // Normal operation - add to comparison history
+        this.comparisonHistory.push(newRowData); // Add to bottom instead of top
+
+        console.log(
+          "✅ ADDED NEW ROW TO TABLE - Total rows:",
+          this.comparisonHistory.length,
+          "isPaused:",
+          this.isPaused
+        );
       } catch (error) {
         console.error("Analysis failed:", error);
         this.error = `Analysis failed: ${error.message}`;
@@ -480,8 +919,25 @@ export default {
       // 4. Number Period Added (provide Id)
       const addedPeriods = await this.getAddedPeriods(periods);
       console.log("Added periods result:", addedPeriods);
+      console.log("Previous manifest exists:", !!this.previousManifest);
+      console.log("Current periods count:", periods.length);
+
+      // For testing: if this is the first load, show current periods as "initial load"
       const addedValue =
-        addedPeriods.count > 0
+        !this.previousManifest && periods.length > 0
+          ? `${
+              periods.length
+            } (Initial load - showing current periods)\n${periods
+              .map((period, index) => {
+                const periodId =
+                  period.id?.parsed ||
+                  period.id?.raw ||
+                  period.id ||
+                  `period_${index}`;
+                return `Id="${periodId}"`;
+              })
+              .join("\n")}`
+          : addedPeriods.count > 0
           ? `${addedPeriods.count} (Number of periods added)\n${
               addedPeriods.ids.length > 0
                 ? addedPeriods.ids.map((id) => `Id="${id}"`).join("\n")
@@ -492,8 +948,18 @@ export default {
       analysis.push({
         metric: "Number Period Added (provide Id)",
         value: addedValue,
-        status: addedPeriods.count > 0 ? "ADDED" : "OK",
-        statusClass: addedPeriods.count > 0 ? "status-added" : "status-ok",
+        status:
+          !this.previousManifest && periods.length > 0
+            ? "INFO"
+            : addedPeriods.count > 0
+            ? "ADDED"
+            : "OK",
+        statusClass:
+          !this.previousManifest && periods.length > 0
+            ? "status-info"
+            : addedPeriods.count > 0
+            ? "status-added"
+            : "status-ok",
         hasDifference: addedPeriods.count > 0,
       });
 
@@ -519,17 +985,24 @@ export default {
       const segmentAnalysis = await this.analyzeSegments(periods);
       analysis.push(...segmentAnalysis);
 
-      // 7. Profile same in all Periods - CORRECT: Validate segment equivalence across profiles
-      const profileConsistency =
-        this.validateSegmentEquivalenceAcrossProfiles(periods);
+      // 7. Profile same in all Periods - CORRECT: Validate profile consistency across periods
+      const profileConsistency = this.checkProfileConsistency(periods);
+      console.log("Profile consistency validation result:", profileConsistency);
       analysis.push({
         metric: "Profile same in all Periods",
-        value: profileConsistency.consistent ? "Yes" : "No",
+        value: profileConsistency.consistent
+          ? "Yes"
+          : `No (${profileConsistency.issues.length} issue${
+              profileConsistency.issues.length > 1 ? "s" : ""
+            })`,
         status: profileConsistency.consistent ? "OK" : "INCONSISTENT",
         statusClass: profileConsistency.consistent
           ? "status-ok"
           : "status-error-red",
         hasDifference: !profileConsistency.consistent,
+        tooltip: profileConsistency.consistent
+          ? "All periods have consistent profiles"
+          : `Issues found:\n${profileConsistency.issues.join("\n")}`,
       });
 
       // 8. Video and Audio Duration are Same - CORRECT: With proper PTO handling
@@ -537,7 +1010,9 @@ export default {
         this.validateVideoAudioDurationConsistency(periods);
       const durationValue = durationConsistency.consistent
         ? "Yes"
-        : `No (${durationConsistency.issues.join(", ")})`;
+        : `No (${durationConsistency.issues.length} issue${
+            durationConsistency.issues.length > 1 ? "s" : ""
+          })`;
       analysis.push({
         metric: "Video and Audio Duration are Same",
         value: durationValue,
@@ -546,19 +1021,49 @@ export default {
           ? "status-ok"
           : "status-error-red",
         hasDifference: !durationConsistency.consistent,
+        tooltip: durationConsistency.consistent
+          ? "All video and audio durations match"
+          : `Issues found:\n${durationConsistency.issues.join("\n")}`,
       });
 
       // 9. Start Time Correct? - Enhanced with Period continuity and absolute timing
       const startTimeValidation = this.validateStartTimes(periods);
+
+      // Debug: Log the period results structure
+      console.log(
+        "Start time validation period results:",
+        startTimeValidation.periodResults
+      );
+
+      // Format the display to show Period ID, Period Start, and Yes/No for each period
+      const startTimeValue =
+        startTimeValidation.periodResults &&
+        startTimeValidation.periodResults.length > 0
+          ? startTimeValidation.periodResults
+              .map(
+                (result) =>
+                  `Period Id="${result.periodId}": Start=${
+                    result.periodStart
+                  }s, Correct=${result.correct ? "Yes" : "No"}`
+              )
+              .join("\n")
+          : startTimeValidation.correct
+          ? "Yes"
+          : "No";
+
+      console.log("Start time display value:", startTimeValue);
+
       analysis.push({
         metric: "Start Time Correct?",
-        value: startTimeValidation.correct
-          ? "Yes"
-          : startTimeValidation.issues.join(", "),
+        value: startTimeValue,
         status: startTimeValidation.correct ? "OK" : "INCORRECT",
         statusClass: startTimeValidation.correct ? "status-ok" : "status-error",
         hasDifference: !startTimeValidation.correct,
-        tooltip: startTimeValidation.tooltip || "",
+        tooltip: startTimeValidation.correct
+          ? startTimeValidation.tooltip || "All period start times are correct"
+          : `Issues found:\n${startTimeValidation.issues.join(
+              "\n"
+            )}\n\nTiming details:\n${startTimeValidation.tooltip || ""}`,
       });
 
       // 8-11. Period Segment Added/Removed (Video/Audio)
@@ -569,14 +1074,138 @@ export default {
       const segmentTiming = this.validateSegmentTiming(periods);
       analysis.push({
         metric: "Is Segment Timing Correct?",
-        value: segmentTiming.correct ? "Yes" : segmentTiming.issues.join(", "),
+        value: segmentTiming.correct
+          ? "Yes"
+          : `No (${segmentTiming.issues.length} issue${
+              segmentTiming.issues.length > 1 ? "s" : ""
+            })`,
         status: segmentTiming.correct ? "OK" : "TIMING_ERROR",
         statusClass: segmentTiming.correct ? "status-ok" : "status-error",
         hasDifference: !segmentTiming.correct,
+        tooltip: segmentTiming.correct
+          ? "All segment timing is correct"
+          : `Issues found:\n${segmentTiming.issues.join("\n")}`,
       });
 
-      // NEW: Period ID Validation
-      // 15. Profile (Leave blank for now)
+      // NEW VALIDATIONS REQUESTED BY USER:
+
+      // 15. Download Time vs Segment Duration Validation
+      const downloadTimeValidation =
+        this.validateDownloadTimeVsSegmentDuration(periods);
+      analysis.push({
+        metric: "Download Time vs Segment Duration",
+        value: downloadTimeValidation.valid
+          ? "OK"
+          : `CRITICAL: ${downloadTimeValidation.issues.length} issue${
+              downloadTimeValidation.issues.length > 1 ? "s" : ""
+            }`,
+        status: downloadTimeValidation.valid ? "OK" : "CRITICAL_ERROR",
+        statusClass: downloadTimeValidation.valid
+          ? "status-ok"
+          : "status-error-red",
+        hasDifference: !downloadTimeValidation.valid,
+        tooltip: downloadTimeValidation.valid
+          ? "Download time is within acceptable limits for all segments"
+          : `CRITICAL ISSUES:\n${downloadTimeValidation.issues.join(
+              "\n"
+            )}\n\nSegment Details:\n${
+              downloadTimeValidation.segmentDetails || ""
+            }`,
+      });
+
+      // 16. DRM Validation (Check for missing DRM nodes)
+      const drmValidation = this.validateDRMPresence(periods);
+      analysis.push({
+        metric: "DRM Protection Status",
+        value: drmValidation.hasDRM
+          ? `Protected (${drmValidation.drmSystems.length} system${
+              drmValidation.drmSystems.length > 1 ? "s" : ""
+            })`
+          : "No DRM Protection Found",
+        status: drmValidation.hasDRM ? "PROTECTED" : "UNPROTECTED",
+        statusClass: drmValidation.hasDRM ? "status-ok" : "status-warning",
+        hasDifference: false,
+        tooltip: drmValidation.hasDRM
+          ? `DRM Systems Found:\n${drmValidation.drmSystems.join(
+              "\n"
+            )}\n\nDetails:\n${drmValidation.details}`
+          : "No ContentProtection elements found in any Period. Content is unprotected.",
+      });
+
+      // 17. DRM Signaling Validation (Production-grade semantic comparison)
+      const drmSignalingValidation = await this.validateDRMSignaling(periods);
+      analysis.push({
+        metric: "DRM Signaling",
+        value: drmSignalingValidation.summary,
+        status: drmSignalingValidation.status,
+        statusClass: drmSignalingValidation.statusClass,
+        hasDifference: drmSignalingValidation.changed,
+        tooltip: drmSignalingValidation.details,
+      });
+
+      // 18. Period Start Time Comparison
+      const periodStartTimeComparison = this.comparePeriodStartTimes(periods);
+      analysis.push({
+        metric: "Period Start Time Comparison",
+        value: periodStartTimeComparison.consistent
+          ? "Consistent"
+          : `Inconsistent (${periodStartTimeComparison.issues.length} issue${
+              periodStartTimeComparison.issues.length > 1 ? "s" : ""
+            })`,
+        status: periodStartTimeComparison.consistent ? "OK" : "INCONSISTENT",
+        statusClass: periodStartTimeComparison.consistent
+          ? "status-ok"
+          : "status-error",
+        hasDifference: !periodStartTimeComparison.consistent,
+        tooltip: periodStartTimeComparison.consistent
+          ? "All period start times follow proper sequence"
+          : `Issues found:\n${periodStartTimeComparison.issues.join("\n")}`,
+      });
+
+      // 19. Segment Profile Equivalence Validation
+      const segmentProfileEquivalence =
+        this.validateSegmentProfileEquivalence(periods);
+      analysis.push({
+        metric: "Segments Same Across All Profiles",
+        value: segmentProfileEquivalence.equivalent
+          ? "Yes"
+          : `No (${segmentProfileEquivalence.issues.length} issue${
+              segmentProfileEquivalence.issues.length > 1 ? "s" : ""
+            })`,
+        status: segmentProfileEquivalence.equivalent
+          ? "OK"
+          : "PROFILE_MISMATCH",
+        statusClass: segmentProfileEquivalence.equivalent
+          ? "status-ok"
+          : "status-error-red",
+        hasDifference: !segmentProfileEquivalence.equivalent,
+        tooltip: segmentProfileEquivalence.equivalent
+          ? "All profiles have identical segment timelines"
+          : `Profile Issues:\n${segmentProfileEquivalence.issues.join("\n")}`,
+      });
+
+      // 20. Period ID Consistency Check (vs Previous MPD)
+      const periodIdConsistency = await this.validatePeriodIdConsistency(
+        periods
+      );
+      analysis.push({
+        metric: "Period IDs Same as Previous MPD",
+        value: periodIdConsistency.consistent
+          ? "Yes"
+          : `No (${periodIdConsistency.changes.length} change${
+              periodIdConsistency.changes.length > 1 ? "s" : ""
+            })`,
+        status: periodIdConsistency.consistent ? "OK" : "CHANGED",
+        statusClass: periodIdConsistency.consistent
+          ? "status-ok"
+          : "status-warning",
+        hasDifference: !periodIdConsistency.consistent,
+        tooltip: periodIdConsistency.consistent
+          ? "All Period IDs match previous MPD"
+          : `Changes detected:\n${periodIdConsistency.changes.join("\n")}`,
+      });
+
+      // 21. Profile (Leave blank for now)
       analysis.push({
         metric: "Profile",
         value: "",
@@ -585,7 +1214,7 @@ export default {
         hasDifference: false,
       });
 
-      // 16. Time Diff(s)
+      // 22. Time Diff(s)
       const timeDiff = await this.calculateTimeDifferences(periods);
       analysis.push({
         metric: "Time Diff(s)",
@@ -595,7 +1224,7 @@ export default {
         hasDifference: false,
       });
 
-      // 17. Switch Profile (Leave empty for now)
+      // 23. Switch Profile (Leave empty for now)
       analysis.push({
         metric: "Switch Profile",
         value: "",
@@ -765,124 +1394,288 @@ export default {
     },
 
     async getAddedPeriods(currentPeriods) {
+      console.log("=== getAddedPeriods DEBUG START ===");
+      console.log("Previous manifest exists:", !!this.previousManifest);
+      console.log("Current periods count:", currentPeriods.length);
+
       if (!this.previousManifest) {
-        // On first load, show current periods
+        console.log("No previous manifest - returning 0 added periods");
         return {
-          count: currentPeriods.length,
-          ids: currentPeriods.map(
-            (period, index) =>
-              period.id?.parsed ||
-              period.id?.raw ||
-              period.id ||
-              `period_${index}`
-          ),
+          count: 0,
+          ids: [],
         };
       }
 
       // Extract previous periods for comparison
       const previousPeriods = await this.extractPreviousPeriods();
 
-      console.log("=== DEBUG: Period Comparison ===");
-      console.log("Current periods count:", currentPeriods.length);
-      console.log("Previous periods count:", previousPeriods.length);
-      console.log("Current periods structure:", currentPeriods);
-      console.log("Previous periods structure:", previousPeriods);
+      // CORRECT: Use stable period identity based on (start, duration) or first segment time
+      const currentPeriodIdentities =
+        this.extractStablePeriodIdentities(currentPeriods);
+      const previousPeriodIdentities =
+        this.extractStablePeriodIdentities(previousPeriods);
 
-      // Extract Period IDs for comparison
-      const currentPeriodIds = currentPeriods.map((period, index) => {
-        const idObject = period.id;
-        const extractedId =
-          idObject?.parsed || idObject?.raw || idObject || `period_${index}`;
-        console.log(
-          `Current period ${index}: id object =`,
-          idObject,
-          "extracted id =",
-          extractedId
-        );
-        console.log(
-          `Full ID length: ${extractedId.length}, Full ID: "${extractedId}"`
-        );
-        return extractedId;
-      });
+      console.log("Current period identities:", currentPeriodIdentities);
+      console.log("Previous period identities:", previousPeriodIdentities);
 
-      const previousPeriodIds = previousPeriods.map((period, index) => {
-        const idObject = period.id;
-        const extractedId =
-          idObject?.parsed || idObject?.raw || idObject || `period_${index}`;
-        console.log(
-          `Previous period ${index}: id object =`,
-          idObject,
-          "extracted id =",
-          extractedId
-        );
-        console.log(
-          `Full ID length: ${extractedId.length}, Full ID: "${extractedId}"`
-        );
-        return extractedId;
-      });
-
-      console.log("Current IDs array:", currentPeriodIds);
-      console.log("Previous IDs array:", previousPeriodIds);
-
-      // Find added period IDs
-      const addedPeriodIds = currentPeriodIds.filter(
-        (id) => !previousPeriodIds.includes(id)
+      // Find added periods by comparing stable identities
+      const addedPeriods = currentPeriodIdentities.filter(
+        (current) =>
+          !previousPeriodIdentities.some((previous) =>
+            this.periodsMatch(current, previous)
+          )
       );
 
-      console.log("Added IDs result:", addedPeriodIds);
-      console.log("=== END DEBUG ===");
+      console.log("Added periods result:", addedPeriods);
+      console.log("=== getAddedPeriods DEBUG END ===");
 
       return {
-        count: addedPeriodIds.length,
-        ids: addedPeriodIds,
+        count: addedPeriods.length,
+        ids: addedPeriods.map((p) => p.displayId),
       };
     },
 
     async getRemovedPeriods(currentPeriods) {
+      console.log("=== getRemovedPeriods DEBUG START ===");
+      console.log("Previous manifest exists:", !!this.previousManifest);
+
       if (!this.previousManifest) {
+        console.log("No previous manifest - returning 0 removed periods");
         return { count: 0, ids: [] };
       }
 
       const previousPeriods = await this.extractPreviousPeriods();
+      console.log("Previous periods count:", previousPeriods.length);
+      console.log("Current periods count:", currentPeriods.length);
 
-      // Extract Period IDs for comparison
-      const currentPeriodIds = currentPeriods.map(
-        (period, index) =>
-          period.id?.parsed || period.id?.raw || period.id || `period_${index}`
+      // CORRECT: Use stable period identity based on (start, duration) or first segment time
+      const currentPeriodIdentities =
+        this.extractStablePeriodIdentities(currentPeriods);
+      const previousPeriodIdentities =
+        this.extractStablePeriodIdentities(previousPeriods);
+
+      console.log("Current period identities:", currentPeriodIdentities);
+      console.log("Previous period identities:", previousPeriodIdentities);
+
+      // Find removed periods by comparing stable identities
+      const removedPeriods = previousPeriodIdentities.filter(
+        (previous) =>
+          !currentPeriodIdentities.some((current) =>
+            this.periodsMatch(current, previous)
+          )
       );
 
-      const previousPeriodIds = previousPeriods.map(
-        (period, index) =>
-          period.id?.parsed || period.id?.raw || period.id || `period_${index}`
-      );
-
-      // Find removed period IDs
-      const removedPeriodIds = previousPeriodIds.filter(
-        (id) => !currentPeriodIds.includes(id)
-      );
+      console.log("Removed periods result:", removedPeriods);
+      console.log("=== getRemovedPeriods DEBUG END ===");
 
       return {
-        count: removedPeriodIds.length,
-        ids: removedPeriodIds,
+        count: removedPeriods.length,
+        ids: removedPeriods.map((p) => p.displayId),
       };
     },
 
-    async extractPreviousPeriods() {
-      if (!this.previousManifest) return [];
+    // CORRECT: Extract stable period identity based on timing, not IDs
+    extractStablePeriodIdentities(periods) {
+      return periods.map((period, index) => {
+        // Method 1: Use Period start and duration if available
+        const periodStart = period.start?.parsed;
+        const periodDuration = period.duration?.parsed;
 
+        if (
+          periodStart !== undefined &&
+          periodStart !== null &&
+          periodDuration !== undefined &&
+          periodDuration !== null
+        ) {
+          return {
+            start: periodStart,
+            duration: periodDuration,
+            end: periodStart + periodDuration,
+            method: "period_timing",
+            displayId: `start=${periodStart.toFixed(
+              3
+            )}s_dur=${periodDuration.toFixed(3)}s`,
+            originalId:
+              period.id?.parsed ||
+              period.id?.raw ||
+              period.id ||
+              `period_${index}`,
+          };
+        }
+
+        // Method 2: Derive from first segment presentation time
+        const firstSegmentTime = this.getFirstSegmentPresentationTime(period);
+        if (firstSegmentTime !== null && firstSegmentTime !== undefined) {
+          const estimatedDuration =
+            this.estimatePeriodDurationFromSegments(period);
+          if (estimatedDuration !== null && estimatedDuration !== undefined) {
+            return {
+              start: firstSegmentTime,
+              duration: estimatedDuration,
+              end: firstSegmentTime + estimatedDuration,
+              method: "segment_timing",
+              displayId: `seg_start=${firstSegmentTime.toFixed(
+                3
+              )}s_dur=${estimatedDuration.toFixed(3)}s`,
+              originalId:
+                period.id?.parsed ||
+                period.id?.raw ||
+                period.id ||
+                `period_${index}`,
+            };
+          }
+        }
+
+        // Method 3: EventStream boundaries (for SCTE-35 marked periods)
+        const eventStreamTime = this.getEventStreamTime(period);
+        if (eventStreamTime !== null && eventStreamTime !== undefined) {
+          return {
+            start: eventStreamTime,
+            duration: 0, // Event-based periods may not have duration
+            end: eventStreamTime,
+            method: "event_stream",
+            displayId: `event_time=${eventStreamTime.toFixed(3)}s`,
+            originalId:
+              period.id?.parsed ||
+              period.id?.raw ||
+              period.id ||
+              `period_${index}`,
+          };
+        }
+
+        // Fallback: Use index-based identity (least reliable)
+        console.warn(
+          `Period ${index}: No stable timing identity found, using index fallback`
+        );
+        return {
+          start: index * 1000, // Arbitrary large spacing
+          duration: 0,
+          end: index * 1000,
+          method: "index_fallback",
+          displayId: `fallback_index=${index}`,
+          originalId:
+            period.id?.parsed ||
+            period.id?.raw ||
+            period.id ||
+            `period_${index}`,
+        };
+      });
+    },
+
+    // Check if two periods match based on stable identity
+    periodsMatch(period1, period2) {
+      const tolerance = 0.001; // 1ms tolerance for timing comparisons
+
+      // Prefer timing-based matches over fallbacks
+      if (
+        period1.method !== "index_fallback" &&
+        period2.method !== "index_fallback"
+      ) {
+        return (
+          Math.abs(period1.start - period2.start) <= tolerance &&
+          Math.abs(period1.duration - period2.duration) <= tolerance
+        );
+      }
+
+      // Fallback to original ID comparison only if both are fallbacks
+      if (
+        period1.method === "index_fallback" &&
+        period2.method === "index_fallback"
+      ) {
+        return period1.originalId === period2.originalId;
+      }
+
+      return false;
+    },
+
+    // Get first segment presentation time from period
+    getFirstSegmentPresentationTime(period) {
       try {
-        // Import ManifestService to extract periods from previous manifest
-        const { ManifestService } = await import(
-          "../services/manifestService.js"
-        );
-        const manifestService = new ManifestService();
-        const previousMpdInfo = manifestService.extractMpdInfo(
-          this.previousManifest
-        );
-        return this.ensureArray(previousMpdInfo.Period);
+        const adaptationSets = this.ensureArray(period.AdaptationSet);
+
+        for (const as of adaptationSets) {
+          const representations = this.ensureArray(as.Representation);
+
+          for (const rep of representations) {
+            if (rep.SegmentTemplate && rep.SegmentTemplate.SegmentTimeline) {
+              const timescale = rep.SegmentTemplate.timescale?.parsed || 1;
+              const pto =
+                rep.SegmentTemplate.presentationTimeOffset?.parsed || 0;
+              const sElements = this.ensureArray(
+                rep.SegmentTemplate.SegmentTimeline.S
+              );
+
+              if (sElements.length > 0) {
+                const firstS = sElements[0];
+                if (firstS.t?.parsed !== undefined) {
+                  // CORRECT: absoluteSegmentStart = (segment.t - presentationTimeOffset) / timescale
+                  return (firstS.t.parsed - pto) / timescale;
+                }
+              }
+            }
+          }
+        }
+
+        return null;
       } catch (error) {
-        console.warn("Failed to extract previous periods:", error);
-        return [];
+        console.warn("Failed to extract first segment time:", error);
+        return null;
+      }
+    },
+
+    // Estimate period duration from segment timeline
+    estimatePeriodDurationFromSegments(period) {
+      try {
+        const adaptationSets = this.ensureArray(period.AdaptationSet);
+
+        for (const as of adaptationSets) {
+          const representations = this.ensureArray(as.Representation);
+
+          for (const rep of representations) {
+            if (rep.SegmentTemplate && rep.SegmentTemplate.SegmentTimeline) {
+              const timeline = this.expandTimelineWithPTO(rep);
+              if (timeline.totalDuration > 0) {
+                return timeline.totalDuration;
+              }
+            }
+          }
+        }
+
+        return 0;
+      } catch (error) {
+        console.warn("Failed to estimate period duration:", error);
+        return 0;
+      }
+    },
+
+    // Get EventStream time for SCTE-35 marked periods
+    getEventStreamTime(period) {
+      try {
+        if (period.EventStream) {
+          const eventStreams = this.ensureArray(period.EventStream);
+
+          for (const es of eventStreams) {
+            const schemeId = es.schemeIdUri || "";
+            if (
+              schemeId.includes("scte35") ||
+              schemeId.includes("urn:scte:scte35")
+            ) {
+              // Extract presentation time from EventStream if available
+              const events = this.ensureArray(es.Event);
+              if (
+                events.length > 0 &&
+                events[0].presentationTime?.parsed !== undefined
+              ) {
+                return events[0].presentationTime.parsed;
+              }
+            }
+          }
+        }
+
+        return null;
+      } catch (error) {
+        console.warn("Failed to extract EventStream time:", error);
+        return null;
       }
     },
 
@@ -1321,7 +2114,7 @@ export default {
       return { valid, issues };
     },
 
-    // CORRECT: Validate video/audio duration with proper PTO handling
+    // CORRECT: Validate video/audio duration with proper tolerance for DASH streams
     validateVideoAudioDurationConsistency(periods) {
       const issues = [];
       let consistent = true;
@@ -1362,15 +2155,65 @@ export default {
           }
         });
 
-        // Compare video and audio durations (ignore Period@duration - SegmentTimeline is authoritative)
-        if (videoDuration !== null && audioDuration !== null) {
+        // CORRECT: Use generous tolerance for DASH streams
+        // Audio often starts earlier, ends later, has padding, and live manifests never perfectly match
+        if (
+          videoDuration !== null &&
+          videoDuration !== undefined &&
+          audioDuration !== null &&
+          audioDuration !== undefined
+        ) {
           const durationDiff = Math.abs(videoDuration - audioDuration);
-          if (durationDiff > 0.1) {
+
+          // Use 5% tolerance or minimum 1 second, whichever is larger
+          const tolerance = Math.max(
+            1.0,
+            Math.max(videoDuration, audioDuration) * 0.05
+          );
+
+          if (durationDiff > tolerance) {
+            // This is now a WARNING, not an ERROR
             consistent = false;
             issues.push(
-              `Period ${periodId}: Video/Audio duration mismatch (${videoDuration.toFixed(
+              `Period ${periodId}: Video/Audio duration difference (${durationDiff.toFixed(
                 3
-              )}s vs ${audioDuration.toFixed(3)}s)`
+              )}s) exceeds tolerance (${tolerance.toFixed(
+                3
+              )}s) - Video: ${videoDuration.toFixed(
+                3
+              )}s, Audio: ${audioDuration.toFixed(3)}s`
+            );
+          } else if (durationDiff > 0.1) {
+            // Log minor differences as info
+            console.log(
+              `Period ${periodId}: Minor video/audio duration difference (${durationDiff.toFixed(
+                3
+              )}s) within tolerance`
+            );
+          }
+        } else if (
+          (videoDuration === null || videoDuration === undefined) &&
+          (audioDuration === null || audioDuration === undefined)
+        ) {
+          // No duration information available
+          console.log(
+            `Period ${periodId}: No duration information available for comparison`
+          );
+        } else {
+          // Only one content type has duration info - this is acceptable
+          const availableType =
+            videoDuration !== null && videoDuration !== undefined
+              ? "video"
+              : "audio";
+          const availableDuration =
+            videoDuration !== null && videoDuration !== undefined
+              ? videoDuration
+              : audioDuration;
+          if (availableDuration !== null && availableDuration !== undefined) {
+            console.log(
+              `Period ${periodId}: Only ${availableType} duration available (${availableDuration.toFixed(
+                3
+              )}s)`
             );
           }
         }
@@ -1545,6 +2388,46 @@ export default {
       });
 
       return hasAdMarkers;
+    },
+
+    // Ad period detection for DOM elements (used in detailed view)
+    isAdPeriodFromDom(periodElement) {
+      // Check for SCTE-35 EventStreams (authoritative ad marker)
+      const eventStreams = periodElement.querySelectorAll("EventStream");
+      for (let es of eventStreams) {
+        const schemeId = es.getAttribute("schemeIdUri") || "";
+        if (
+          schemeId.includes("scte35") ||
+          schemeId.includes("urn:scte:scte35")
+        ) {
+          return true;
+        }
+      }
+
+      // Check for ad-specific AdaptationSet characteristics
+      const adaptationSets = periodElement.querySelectorAll("AdaptationSet");
+      for (let as of adaptationSets) {
+        // Check for explicit ad content types
+        const contentType = as.getAttribute("contentType") || "";
+        if (contentType === "advertisement") return true;
+
+        // Check for ad-specific roles
+        const roles = as.querySelectorAll("Role");
+        for (let role of roles) {
+          const schemeId = role.getAttribute("schemeIdUri") || "";
+          const value = role.getAttribute("value") || "";
+          if (
+            schemeId.includes("urn:mpeg:dash:role") &&
+            value === "advertisement"
+          ) {
+            return true;
+          }
+        }
+      }
+
+      // Fallback: Check Period ID for ad pattern (heuristic)
+      const periodId = periodElement.getAttribute("id") || "";
+      return periodId.toLowerCase().startsWith("ad");
     },
 
     // CORRECT: Analyze period segments using concrete segment identity
@@ -1727,15 +2610,32 @@ export default {
       return analysis;
     },
 
+    async extractPreviousPeriods() {
+      if (!this.previousManifest) return [];
+
+      try {
+        // Import ManifestService to extract periods from previous manifest
+        const { ManifestService } = await import(
+          "../services/manifestService.js"
+        );
+        const manifestService = new ManifestService();
+        const previousMpdInfo = manifestService.extractMpdInfo(
+          this.previousManifest
+        );
+        return this.ensureArray(previousMpdInfo.Period);
+      } catch (error) {
+        console.warn("Failed to extract previous periods:", error);
+        return [];
+      }
+    },
+
+    // CORRECT: Check actual DASH profile consistency (codecs, MIME types, resolution ladders)
     checkProfileConsistency(periods) {
       const issues = [];
       let consistent = true;
 
       try {
-        console.log("=== CHECKING PROFILE CONSISTENCY ===");
-
-        // In DASH, profiles are typically defined at the MPD level, not Period level
-        // But we need to check if all periods follow the same profile rules
+        console.log("=== CHECKING DASH PROFILE CONSISTENCY ===");
 
         if (periods.length <= 1) {
           console.log(
@@ -1744,141 +2644,276 @@ export default {
           return { consistent: true, issues: [] };
         }
 
-        // Check key profile-related attributes across periods
+        // Extract actual DASH profiles for each period
         const periodProfiles = periods.map((period, index) => {
           const adaptationSets = this.ensureArray(period.AdaptationSet);
 
-          // Collect profile-relevant information
           const profile = {
             periodIndex: index,
             periodId: period.id?.parsed || period.id?.raw || `period_${index}`,
-            // Check if all AdaptationSets have consistent structure
-            adaptationSetCount: adaptationSets.length,
-            contentTypes: [],
-            segmentAlignment: [],
-            bitstreamSwitching: [],
+            adaptationSets: [],
           };
 
-          adaptationSets.forEach((as) => {
-            const contentType =
-              as.contentType?.parsed ||
-              this.inferContentType(as.mimeType?.parsed);
-            profile.contentTypes.push(contentType);
-            profile.segmentAlignment.push(as.segmentAlignment?.parsed);
-            profile.bitstreamSwitching.push(as.bitstreamSwitching?.parsed);
+          adaptationSets.forEach((as, asIndex) => {
+            const representations = this.ensureArray(as.Representation);
+            const asProfile = {
+              asIndex: asIndex,
+              contentType:
+                as.contentType?.parsed ||
+                this.inferContentType(as.mimeType?.parsed),
+              mimeType: as.mimeType?.parsed || "unknown",
+              codecs: as.codecs?.parsed || "unknown",
+              representations: [],
+            };
+
+            representations.forEach((rep) => {
+              const repProfile = {
+                bandwidth: rep.bandwidth?.parsed || 0,
+                width: rep.width?.parsed || 0,
+                height: rep.height?.parsed || 0,
+                frameRate: rep.frameRate?.parsed || "unknown",
+                audioSamplingRate: rep.audioSamplingRate?.parsed || 0,
+                codecs: rep.codecs?.parsed || asProfile.codecs,
+                mimeType: rep.mimeType?.parsed || asProfile.mimeType,
+                // SegmentTemplate compatibility
+                segmentTemplate: this.extractSegmentTemplateProfile(
+                  rep.SegmentTemplate
+                ),
+              };
+
+              asProfile.representations.push(repProfile);
+            });
+
+            profile.adaptationSets.push(asProfile);
           });
 
-          // Sort arrays for consistent comparison
-          profile.contentTypes.sort();
-
-          console.log(`Period ${index} profile:`, profile);
+          console.log(`Period ${index} DASH profile:`, profile);
           return profile;
         });
 
-        // Compare profiles between periods
-        const firstPeriod = periodProfiles[0];
+        // Compare DASH profiles between periods
+        const referencePeriod = periodProfiles[0];
 
         for (let i = 1; i < periodProfiles.length; i++) {
           const currentPeriod = periodProfiles[i];
 
-          // Check adaptation set count consistency
+          // Check AdaptationSet count consistency
           if (
-            currentPeriod.adaptationSetCount !== firstPeriod.adaptationSetCount
+            currentPeriod.adaptationSets.length !==
+            referencePeriod.adaptationSets.length
           ) {
             consistent = false;
             issues.push(
-              `Period ${i}: Different number of AdaptationSets (${currentPeriod.adaptationSetCount} vs ${firstPeriod.adaptationSetCount})`
+              `Period ${i}: Different number of AdaptationSets (${currentPeriod.adaptationSets.length} vs ${referencePeriod.adaptationSets.length})`
             );
+            continue;
           }
 
-          // Check content type consistency
-          if (
-            JSON.stringify(currentPeriod.contentTypes) !==
-            JSON.stringify(firstPeriod.contentTypes)
+          // Check each AdaptationSet profile compatibility
+          for (
+            let asIndex = 0;
+            asIndex < referencePeriod.adaptationSets.length;
+            asIndex++
           ) {
-            consistent = false;
-            issues.push(
-              `Period ${i}: Different content types (${currentPeriod.contentTypes.join(
-                ","
-              )} vs ${firstPeriod.contentTypes.join(",")})`
-            );
-          }
+            const refAS = referencePeriod.adaptationSets[asIndex];
+            const curAS = currentPeriod.adaptationSets[asIndex];
 
-          // Check segment alignment consistency
-          if (
-            JSON.stringify(currentPeriod.segmentAlignment) !==
-            JSON.stringify(firstPeriod.segmentAlignment)
-          ) {
-            consistent = false;
-            issues.push(`Period ${i}: Different segmentAlignment settings`);
+            // Content type must match
+            if (curAS.contentType !== refAS.contentType) {
+              consistent = false;
+              issues.push(
+                `Period ${i} AS${asIndex}: Content type mismatch (${curAS.contentType} vs ${refAS.contentType})`
+              );
+            }
+
+            // MIME type must be compatible
+            if (curAS.mimeType !== refAS.mimeType) {
+              consistent = false;
+              issues.push(
+                `Period ${i} AS${asIndex}: MIME type mismatch (${curAS.mimeType} vs ${refAS.mimeType})`
+              );
+            }
+
+            // Codec compatibility check
+            if (
+              curAS.codecs !== refAS.codecs &&
+              curAS.codecs !== "unknown" &&
+              refAS.codecs !== "unknown"
+            ) {
+              consistent = false;
+              issues.push(
+                `Period ${i} AS${asIndex}: Codec mismatch (${curAS.codecs} vs ${refAS.codecs})`
+              );
+            }
+
+            // Check representation ladder compatibility
+            const ladderCheck = this.checkRepresentationLadderCompatibility(
+              refAS.representations,
+              curAS.representations,
+              i,
+              asIndex
+            );
+            if (!ladderCheck.compatible) {
+              consistent = false;
+              issues.push(...ladderCheck.issues);
+            }
+
+            // Check SegmentTemplate compatibility
+            const templateCheck = this.checkSegmentTemplateCompatibility(
+              refAS.representations,
+              curAS.representations,
+              i,
+              asIndex
+            );
+            if (!templateCheck.compatible) {
+              consistent = false;
+              issues.push(...templateCheck.issues);
+            }
           }
         }
 
-        // Additional check: Verify that representation structures are similar
-        // This ensures cross-period comparisons remain valid
-        const representationStructures = periods
-          .map((period, pIndex) => {
-            const adaptationSets = this.ensureArray(period.AdaptationSet);
-            return adaptationSets.map((as, asIndex) => {
-              const representations = this.ensureArray(as.Representation);
-              return {
-                periodIndex: pIndex,
-                asIndex: asIndex,
-                contentType:
-                  as.contentType?.parsed ||
-                  this.inferContentType(as.mimeType?.parsed),
-                representationCount: representations.length,
-                // Check if representations have similar structure
-                hasSegmentTemplate: representations.some(
-                  (rep) => rep.SegmentTemplate
-                ),
-                hasSegmentList: representations.some((rep) => rep.SegmentList),
-                hasBaseURL: representations.some((rep) => rep.BaseURL),
-              };
-            });
-          })
-          .flat();
-
-        // Group by content type and adaptation set index
-        const groupedStructures = {};
-        representationStructures.forEach((struct) => {
-          const key = `${struct.contentType}_AS${struct.asIndex}`;
-          if (!groupedStructures[key]) {
-            groupedStructures[key] = [];
-          }
-          groupedStructures[key].push(struct);
-        });
-
-        // Check consistency within each group
-        Object.entries(groupedStructures).forEach(([key, structures]) => {
-          if (structures.length > 1) {
-            const first = structures[0];
-            const inconsistent = structures.find(
-              (s) =>
-                s.representationCount !== first.representationCount ||
-                s.hasSegmentTemplate !== first.hasSegmentTemplate ||
-                s.hasSegmentList !== first.hasSegmentList ||
-                s.hasBaseURL !== first.hasBaseURL
-            );
-
-            if (inconsistent) {
-              consistent = false;
-              issues.push(
-                `${key}: Inconsistent representation structure between periods`
-              );
-            }
-          }
-        });
-
-        console.log("Profile consistency result:", { consistent, issues });
-        console.log("=== END PROFILE CONSISTENCY CHECK ===");
+        console.log("DASH profile consistency result:", { consistent, issues });
+        console.log("=== END DASH PROFILE CONSISTENCY CHECK ===");
       } catch (error) {
-        console.warn("Profile consistency check failed:", error);
+        console.warn("DASH profile consistency check failed:", error);
         consistent = false;
-        issues.push("Profile consistency check failed");
+        issues.push("DASH profile consistency check failed");
       }
 
       return { consistent, issues };
+    },
+
+    // Extract SegmentTemplate profile for compatibility checking
+    extractSegmentTemplateProfile(segmentTemplate) {
+      if (!segmentTemplate) return null;
+
+      return {
+        timescale: segmentTemplate.timescale?.parsed || 1,
+        duration: segmentTemplate.duration?.parsed || null,
+        startNumber: segmentTemplate.startNumber?.parsed || 1,
+        hasTimeline: !!segmentTemplate.SegmentTimeline,
+        media: segmentTemplate.media || null,
+        initialization: segmentTemplate.initialization || null,
+      };
+    },
+
+    // Check if representation ladders are compatible between periods
+    checkRepresentationLadderCompatibility(
+      refReps,
+      curReps,
+      periodIndex,
+      asIndex
+    ) {
+      const issues = [];
+      let compatible = true;
+
+      // Check representation count
+      if (curReps.length !== refReps.length) {
+        compatible = false;
+        issues.push(
+          `Period ${periodIndex} AS${asIndex}: Different representation count (${curReps.length} vs ${refReps.length})`
+        );
+        return { compatible, issues };
+      }
+
+      // Sort representations by bandwidth for comparison
+      const sortedRefReps = [...refReps].sort(
+        (a, b) => a.bandwidth - b.bandwidth
+      );
+      const sortedCurReps = [...curReps].sort(
+        (a, b) => a.bandwidth - b.bandwidth
+      );
+
+      for (let i = 0; i < sortedRefReps.length; i++) {
+        const refRep = sortedRefReps[i];
+        const curRep = sortedCurReps[i];
+
+        // Check resolution compatibility (for video)
+        if (refRep.width > 0 && refRep.height > 0) {
+          if (
+            curRep.width !== refRep.width ||
+            curRep.height !== refRep.height
+          ) {
+            compatible = false;
+            issues.push(
+              `Period ${periodIndex} AS${asIndex} Rep${i}: Resolution mismatch (${curRep.width}x${curRep.height} vs ${refRep.width}x${refRep.height})`
+            );
+          }
+        }
+
+        // Check audio sampling rate compatibility (for audio)
+        if (refRep.audioSamplingRate > 0) {
+          if (curRep.audioSamplingRate !== refRep.audioSamplingRate) {
+            compatible = false;
+            issues.push(
+              `Period ${periodIndex} AS${asIndex} Rep${i}: Audio sampling rate mismatch (${curRep.audioSamplingRate} vs ${refRep.audioSamplingRate})`
+            );
+          }
+        }
+
+        // Check codec compatibility
+        if (
+          curRep.codecs !== refRep.codecs &&
+          curRep.codecs !== "unknown" &&
+          refRep.codecs !== "unknown"
+        ) {
+          compatible = false;
+          issues.push(
+            `Period ${periodIndex} AS${asIndex} Rep${i}: Codec mismatch (${curRep.codecs} vs ${refRep.codecs})`
+          );
+        }
+      }
+
+      return { compatible, issues };
+    },
+
+    // Check SegmentTemplate compatibility between periods
+    checkSegmentTemplateCompatibility(refReps, curReps, periodIndex, asIndex) {
+      const issues = [];
+      let compatible = true;
+
+      for (let i = 0; i < Math.min(refReps.length, curReps.length); i++) {
+        const refTemplate = refReps[i].segmentTemplate;
+        const curTemplate = curReps[i].segmentTemplate;
+
+        if (!refTemplate && !curTemplate) continue;
+
+        if (!refTemplate || !curTemplate) {
+          compatible = false;
+          issues.push(
+            `Period ${periodIndex} AS${asIndex} Rep${i}: SegmentTemplate presence mismatch`
+          );
+          continue;
+        }
+
+        // Check timescale compatibility
+        if (refTemplate.timescale !== curTemplate.timescale) {
+          compatible = false;
+          issues.push(
+            `Period ${periodIndex} AS${asIndex} Rep${i}: Timescale mismatch (${curTemplate.timescale} vs ${refTemplate.timescale})`
+          );
+        }
+
+        // Check template structure compatibility
+        if (refTemplate.hasTimeline !== curTemplate.hasTimeline) {
+          compatible = false;
+          issues.push(
+            `Period ${periodIndex} AS${asIndex} Rep${i}: SegmentTimeline structure mismatch`
+          );
+        }
+
+        // Check duration-based template compatibility
+        if (!refTemplate.hasTimeline && !curTemplate.hasTimeline) {
+          if (refTemplate.duration !== curTemplate.duration) {
+            compatible = false;
+            issues.push(
+              `Period ${periodIndex} AS${asIndex} Rep${i}: Segment duration mismatch (${curTemplate.duration} vs ${refTemplate.duration})`
+            );
+          }
+        }
+      }
+
+      return { compatible, issues };
     },
 
     checkDurationConsistency(periods) {
@@ -1959,14 +2994,15 @@ export default {
       return totalDuration / timescale;
     },
 
+    // CORRECT: Validate start times using segment timeline, not Period.duration
     validateStartTimes(periods) {
       const issues = [];
+      const periodResults = [];
       let correct = true;
       let tooltip = "";
 
       try {
         let expectedStart = 0;
-        let absolutePresentationTime = 0;
 
         periods.forEach((period, pIndex) => {
           const periodId =
@@ -1975,111 +3011,175 @@ export default {
             period.id ||
             `period_${pIndex}`;
           const actualStart = period.start?.parsed || 0;
-          const periodDuration = period.duration?.parsed || 0;
+
+          let periodCorrect = true;
+          const periodIssues = [];
 
           // Validate Period.start continuity
           if (pIndex > 0 && Math.abs(actualStart - expectedStart) > 0.001) {
             correct = false;
-            issues.push(
-              `Period ${periodId}: Start time discontinuity - expected ${expectedStart.toFixed(
-                3
-              )}s, got ${actualStart.toFixed(3)}s`
-            );
+            periodCorrect = false;
+            const issue = `Start time discontinuity - expected ${expectedStart.toFixed(
+              3
+            )}s, got ${actualStart.toFixed(3)}s`;
+            issues.push(`Period ${periodId}: ${issue}`);
+            periodIssues.push(issue);
           }
 
-          // Calculate absolute presentation time for this period
-          const periodAbsoluteStart = absolutePresentationTime + actualStart;
+          // CORRECT: Derive next Period start from last segment end, NOT from Period.duration
+          const periodEndFromSegments =
+            this.calculatePeriodEndFromSegments(period);
+
+          if (periodEndFromSegments !== null) {
+            // Use segment-derived end time for next period's expected start
+            expectedStart = actualStart + periodEndFromSegments;
+
+            // Validate against Period.duration if present (but don't rely on it)
+            const periodDuration = period.duration?.parsed;
+            if (
+              periodDuration &&
+              Math.abs(periodEndFromSegments - periodDuration) > 0.1
+            ) {
+              // This is informational, not an error
+              console.log(
+                `Period ${periodId}: Period.duration (${periodDuration.toFixed(
+                  3
+                )}s) differs from segment-derived duration (${periodEndFromSegments.toFixed(
+                  3
+                )}s)`
+              );
+            }
+          } else {
+            // Fallback to Period.duration if segment timeline is not available
+            const periodDuration = period.duration?.parsed || 0;
+            expectedStart = actualStart + periodDuration;
+
+            if (periodDuration === 0) {
+              console.warn(
+                `Period ${periodId}: No duration information available (neither segments nor Period.duration)`
+              );
+            }
+          }
 
           // Validate against segment timeline start times
-          const adaptationSets = this.ensureArray(period.AdaptationSet);
-          let timelineValidated = false;
+          const segmentValidation = this.validatePeriodAgainstSegmentTimeline(
+            period,
+            actualStart
+          );
+          if (!segmentValidation.valid) {
+            correct = false;
+            periodCorrect = false;
+            issues.push(
+              ...segmentValidation.issues.map(
+                (issue) => `Period ${periodId}: ${issue}`
+              )
+            );
+            periodIssues.push(...segmentValidation.issues);
+          }
 
-          adaptationSets.forEach((as) => {
-            if (timelineValidated) return; // Only validate once per period
-
-            const representations = this.ensureArray(as.Representation);
-            representations.forEach((rep) => {
-              if (timelineValidated) return;
-
-              if (rep.SegmentTemplate && rep.SegmentTemplate.SegmentTimeline) {
-                const timescale = rep.SegmentTemplate.timescale?.parsed || 1;
-                const pto =
-                  rep.SegmentTemplate.presentationTimeOffset?.parsed || 0;
-                const firstS = this.ensureArray(
-                  rep.SegmentTemplate.SegmentTimeline.S
-                )[0];
-
-                if (firstS && firstS.t?.parsed !== undefined) {
-                  // CORRECT absolute start calculation:
-                  // absoluteSegmentStart = Period.start + (segment.t - presentationTimeOffset) / timescale
-                  const segmentRelativeStart =
-                    (firstS.t.parsed - pto) / timescale;
-                  const absoluteSegmentStart =
-                    actualStart + segmentRelativeStart;
-                  const expectedAbsoluteStart = periodAbsoluteStart;
-
-                  if (
-                    Math.abs(absoluteSegmentStart - expectedAbsoluteStart) >
-                    0.001
-                  ) {
-                    correct = false;
-                    issues.push(
-                      `Period ${periodId}: First segment absolute start (${absoluteSegmentStart.toFixed(
-                        3
-                      )}s) doesn't align with expected absolute start (${expectedAbsoluteStart.toFixed(
-                        3
-                      )}s) [Period.start=${actualStart.toFixed(
-                        3
-                      )}s, segment.t=${
-                        firstS.t.parsed
-                      }, PTO=${pto}, timescale=${timescale}]`
-                    );
-                  }
-                  timelineValidated = true;
-                }
-              }
-            });
+          // Store result for this period
+          periodResults.push({
+            periodId: periodId,
+            periodStart: actualStart.toFixed(3),
+            correct: periodCorrect,
           });
 
-          // Update expected start for next period
-          expectedStart = actualStart + periodDuration;
-          absolutePresentationTime += periodDuration;
-
-          // Build tooltip with detailed timing info
-          tooltip += `Period ${periodId}: start=${actualStart.toFixed(
-            3
-          )}s, duration=${periodDuration.toFixed(
-            3
-          )}s, abs=${periodAbsoluteStart.toFixed(3)}s\\n`;
+          // Add to tooltip
+          if (periodIssues.length > 0) {
+            tooltip += `Period ${periodId}: ${periodIssues.join(", ")}\n`;
+          }
         });
 
-        // Validate cross-period timing consistency
-        if (periods.length > 1) {
-          const totalExpectedDuration = periods.reduce((sum, period) => {
-            return sum + (period.duration?.parsed || 0);
-          }, 0);
-
-          const lastPeriod = periods[periods.length - 1];
-          const lastPeriodEnd =
-            (lastPeriod.start?.parsed || 0) +
-            (lastPeriod.duration?.parsed || 0);
-
-          if (Math.abs(lastPeriodEnd - totalExpectedDuration) > 0.001) {
-            correct = false;
-            issues.push(
-              `Cross-period timing error: Last period ends at ${lastPeriodEnd.toFixed(
-                3
-              )}s, expected ${totalExpectedDuration.toFixed(3)}s`
-            );
-          }
-        }
+        console.log("Start time validation result:", {
+          correct,
+          issues,
+          periodResults,
+        });
       } catch (error) {
-        console.warn("Start time validation failed:", error);
+        console.error("Start time validation failed:", error);
         correct = false;
         issues.push("Start time validation failed");
       }
 
-      return { correct, issues, tooltip };
+      return { correct, issues, periodResults, tooltip: tooltip.trim() };
+    },
+
+    // Calculate period end time from segment timeline (authoritative)
+    calculatePeriodEndFromSegments(period) {
+      try {
+        const adaptationSets = this.ensureArray(period.AdaptationSet);
+        let maxEndTime = null;
+
+        adaptationSets.forEach((as) => {
+          const representations = this.ensureArray(as.Representation);
+
+          representations.forEach((rep) => {
+            if (rep.SegmentTemplate && rep.SegmentTemplate.SegmentTimeline) {
+              const timeline = this.expandTimelineWithPTO(rep);
+              if (timeline.lastSegmentEnd > (maxEndTime || 0)) {
+                maxEndTime = timeline.lastSegmentEnd;
+              }
+            }
+          });
+        });
+
+        return maxEndTime;
+      } catch (error) {
+        console.warn("Failed to calculate period end from segments:", error);
+        return null;
+      }
+    },
+
+    // Validate period start time against segment timeline
+    // eslint-disable-next-line no-unused-vars
+    validatePeriodAgainstSegmentTimeline(period, periodStart) {
+      const issues = [];
+      let valid = true;
+
+      try {
+        const adaptationSets = this.ensureArray(period.AdaptationSet);
+
+        adaptationSets.forEach((as) => {
+          const representations = this.ensureArray(as.Representation);
+
+          representations.forEach((rep, repIndex) => {
+            if (rep.SegmentTemplate && rep.SegmentTemplate.SegmentTimeline) {
+              const timescale = rep.SegmentTemplate.timescale?.parsed || 1;
+              const pto =
+                rep.SegmentTemplate.presentationTimeOffset?.parsed || 0;
+              const sElements = this.ensureArray(
+                rep.SegmentTemplate.SegmentTimeline.S
+              );
+
+              if (sElements.length > 0) {
+                const firstS = sElements[0];
+                if (firstS.t?.parsed !== undefined) {
+                  // CORRECT: Calculate segment relative start time
+                  const segmentRelativeStart =
+                    (firstS.t.parsed - pto) / timescale;
+
+                  // Validate that segment timeline aligns with period start
+                  // Allow small tolerance for rounding errors
+                  if (Math.abs(segmentRelativeStart) > 0.001) {
+                    // Segment doesn't start at period boundary - this might be intentional
+                    console.log(
+                      `Rep ${repIndex}: First segment starts at ${segmentRelativeStart.toFixed(
+                        3
+                      )}s relative to period start`
+                    );
+                  }
+                }
+              }
+            }
+          });
+        });
+      } catch (error) {
+        console.warn("Period vs segment timeline validation failed:", error);
+        valid = false;
+        issues.push("Segment timeline validation failed");
+      }
+
+      return { valid, issues };
     },
 
     validateSegmentTiming(periods) {
@@ -2237,6 +3337,7 @@ export default {
       return { correct, issues };
     },
 
+    // CORRECT: Calculate time differences with proper PTO + timescale normalization
     async calculateTimeDifferences(periods) {
       let summary = "No differences detected";
 
@@ -2251,36 +3352,53 @@ export default {
         const differences = [];
         let totalTimeDiff = 0;
 
-        // Build Period ID maps for proper comparison (not array index)
+        // CORRECT: Use stable period identities for comparison, not Period.id
+        const currentIdentities = this.extractStablePeriodIdentities(periods);
+        const previousIdentities =
+          this.extractStablePeriodIdentities(previousPeriods);
+
+        // Build maps for efficient lookup
         const currentPeriodMap = new Map();
-        periods.forEach((period) => {
-          const periodId = period.id?.parsed || period.id?.raw || period.id;
-          if (periodId) {
-            currentPeriodMap.set(periodId, period);
-          }
+        periods.forEach((period, index) => {
+          const identity = currentIdentities[index];
+          currentPeriodMap.set(identity.originalId, { period, identity });
         });
 
         const previousPeriodMap = new Map();
-        previousPeriods.forEach((period) => {
-          const periodId = period.id?.parsed || period.id?.raw || period.id;
-          if (periodId) {
-            previousPeriodMap.set(periodId, period);
-          }
+        previousPeriods.forEach((period, index) => {
+          const identity = previousIdentities[index];
+          previousPeriodMap.set(identity.originalId, { period, identity });
         });
 
-        // Compare periods by ID, not index
-        currentPeriodMap.forEach((currentPeriod, periodId) => {
-          const previousPeriod = previousPeriodMap.get(periodId);
-          if (previousPeriod) {
-            // Calculate time differences using the corrected approach
-            const timeDiff = this.calculatePeriodTimeDifference(
-              currentPeriod,
-              previousPeriod
-            );
+        // Compare periods using stable identity matching
+        currentIdentities.forEach((currentIdentity) => {
+          // Find matching previous period
+          const matchingPrevious = previousIdentities.find((prev) =>
+            this.periodsMatch(currentIdentity, prev)
+          );
 
-            if (timeDiff.totalDiff > 0.001) {
-              differences.push(`Period ${periodId}: ${timeDiff.summary}`);
-              totalTimeDiff += timeDiff.totalDiff;
+          if (matchingPrevious) {
+            const currentPeriod = currentPeriodMap.get(
+              currentIdentity.originalId
+            )?.period;
+            const previousPeriod = previousPeriodMap.get(
+              matchingPrevious.originalId
+            )?.period;
+
+            if (currentPeriod && previousPeriod) {
+              // Calculate time differences using segment-based timing
+              const timeDiff = this.calculatePeriodTimeDifferenceNormalized(
+                currentPeriod,
+                previousPeriod,
+                currentIdentity.originalId
+              );
+
+              if (timeDiff.totalDiff > 0.001) {
+                differences.push(
+                  `${currentIdentity.originalId}: ${timeDiff.summary}`
+                );
+                totalTimeDiff += timeDiff.totalDiff;
+              }
             }
           }
         });
@@ -2296,6 +3414,228 @@ export default {
       }
 
       return { summary };
+    },
+
+    // Calculate period time difference with proper normalization
+    calculatePeriodTimeDifferenceNormalized(
+      currentPeriod,
+      previousPeriod,
+      periodId
+    ) {
+      let totalDiff = 0;
+      const details = [];
+
+      try {
+        const currentAS = this.ensureArray(currentPeriod.AdaptationSet);
+        const previousAS = this.ensureArray(previousPeriod.AdaptationSet);
+
+        // Build AdaptationSet maps by contentType for stable comparison
+        const currentASMap = new Map();
+        currentAS.forEach((as) => {
+          const contentType =
+            as.contentType?.parsed ||
+            this.inferContentType(as.mimeType?.parsed);
+          if (!currentASMap.has(contentType)) {
+            currentASMap.set(contentType, as);
+          }
+        });
+
+        const previousASMap = new Map();
+        previousAS.forEach((as) => {
+          const contentType =
+            as.contentType?.parsed ||
+            this.inferContentType(as.mimeType?.parsed);
+          if (!previousASMap.has(contentType)) {
+            previousASMap.set(contentType, as);
+          }
+        });
+
+        // Compare by contentType using normalized timing
+        currentASMap.forEach((currentAS, contentType) => {
+          const previousAS = previousASMap.get(contentType);
+          if (previousAS) {
+            const currentReps = this.ensureArray(currentAS.Representation);
+            const previousReps = this.ensureArray(previousAS.Representation);
+
+            // Use first representation as authoritative timeline
+            if (currentReps.length > 0 && previousReps.length > 0) {
+              const timeDiff =
+                this.calculateRepresentationTimeDifferenceNormalized(
+                  currentReps[0],
+                  previousReps[0],
+                  contentType
+                );
+
+              if (timeDiff.diff > 0.001) {
+                totalDiff += timeDiff.diff;
+                details.push(`${contentType}: ${timeDiff.summary}`);
+              } else if (timeDiff.error) {
+                details.push(`${contentType}: ${timeDiff.error}`);
+              }
+            }
+          }
+        });
+      } catch (error) {
+        console.warn(
+          `Period ${periodId} time difference calculation failed:`,
+          error
+        );
+        details.push("Calculation failed");
+      }
+
+      return {
+        totalDiff,
+        summary:
+          details.length > 0 ? details.join(", ") : `${totalDiff.toFixed(3)}s`,
+      };
+    },
+
+    // Calculate representation time difference with proper PTO + timescale normalization
+    calculateRepresentationTimeDifferenceNormalized(
+      currentRep,
+      previousRep,
+      contentType
+    ) {
+      try {
+        // Case 1: SegmentTemplate with SegmentTimeline (most accurate)
+        if (
+          currentRep.SegmentTemplate?.SegmentTimeline &&
+          previousRep.SegmentTemplate?.SegmentTimeline
+        ) {
+          const currentTemplate = currentRep.SegmentTemplate;
+          const previousTemplate = previousRep.SegmentTemplate;
+
+          const currentTimescale = currentTemplate.timescale?.parsed || 1;
+          const previousTimescale = previousTemplate.timescale?.parsed || 1;
+          const currentPTO =
+            currentTemplate.presentationTimeOffset?.parsed || 0;
+          const previousPTO =
+            previousTemplate.presentationTimeOffset?.parsed || 0;
+
+          return this.calculateTimelineTimeDifferenceNormalized(
+            currentTemplate.SegmentTimeline,
+            previousTemplate.SegmentTimeline,
+            currentTimescale,
+            previousTimescale,
+            currentPTO,
+            previousPTO,
+            contentType
+          );
+        }
+
+        // Case 2: SegmentTemplate with duration (less accurate but workable)
+        if (
+          currentRep.SegmentTemplate?.duration &&
+          previousRep.SegmentTemplate?.duration
+        ) {
+          const currentTemplate = currentRep.SegmentTemplate;
+          const previousTemplate = previousRep.SegmentTemplate;
+
+          const currentTimescale = currentTemplate.timescale?.parsed || 1;
+          const previousTimescale = previousTemplate.timescale?.parsed || 1;
+
+          const currentSegmentDuration =
+            currentTemplate.duration.parsed / currentTimescale;
+          const previousSegmentDuration =
+            previousTemplate.duration.parsed / previousTimescale;
+
+          // Check duration consistency
+          if (
+            Math.abs(currentSegmentDuration - previousSegmentDuration) > 0.001
+          ) {
+            return {
+              diff: 0,
+              error: "Segment duration changed - comparison invalid",
+              summary: "Duration changed",
+            };
+          }
+
+          const currentStartNumber = currentTemplate.startNumber?.parsed || 1;
+          const previousStartNumber = previousTemplate.startNumber?.parsed || 1;
+
+          if (currentStartNumber !== previousStartNumber) {
+            const segmentDiff = currentStartNumber - previousStartNumber;
+            const timeDiff = segmentDiff * currentSegmentDuration;
+            return {
+              diff: Math.abs(timeDiff),
+              summary: `${timeDiff.toFixed(3)}s (${segmentDiff} segments)`,
+            };
+          }
+        }
+
+        // Case 3: No comparable timing information
+        return {
+          diff: 0,
+          error: "No comparable timing information",
+          summary: "Not computable",
+        };
+      } catch (error) {
+        console.warn(
+          `${contentType} representation time difference calculation failed:`,
+          error
+        );
+        return {
+          diff: 0,
+          error: "Calculation failed",
+          summary: "Calculation failed",
+        };
+      }
+    },
+
+    // Calculate timeline time difference with proper normalization
+    calculateTimelineTimeDifferenceNormalized(
+      currentTimeline,
+      previousTimeline,
+      currentTimescale,
+      previousTimescale,
+      currentPTO,
+      previousPTO,
+      contentType
+    ) {
+      try {
+        const currentS = this.ensureArray(currentTimeline.S);
+        const previousS = this.ensureArray(previousTimeline.S);
+
+        if (currentS.length === 0 || previousS.length === 0) {
+          return {
+            diff: 0,
+            error: "Empty timeline",
+            summary: "Empty timeline",
+          };
+        }
+
+        // CORRECT: Normalize both timelines to presentation time
+        const currentFirstTime = currentS[0].t?.parsed;
+        const previousFirstTime = previousS[0].t?.parsed;
+
+        if (currentFirstTime === undefined || previousFirstTime === undefined) {
+          return {
+            diff: 0,
+            error: "Missing timeline start time",
+            summary: "Missing start time",
+          };
+        }
+
+        // Normalize to presentation time: (t - PTO) / timescale
+        const currentPresentationTime =
+          (currentFirstTime - currentPTO) / currentTimescale;
+        const previousPresentationTime =
+          (previousFirstTime - previousPTO) / previousTimescale;
+
+        const timeDiff = currentPresentationTime - previousPresentationTime;
+
+        return {
+          diff: Math.abs(timeDiff),
+          summary: `${timeDiff.toFixed(3)}s`,
+        };
+      } catch (error) {
+        console.warn(`${contentType} timeline comparison failed:`, error);
+        return {
+          diff: 0,
+          error: "Timeline comparison failed",
+          summary: "Comparison failed",
+        };
+      }
     },
 
     calculatePeriodTimeDifference(currentPeriod, previousPeriod) {
@@ -2554,30 +3894,176 @@ export default {
       }
     },
 
-    startAutoRefetch() {
-      this.stopAutoRefetch(); // Clear any existing timer
+    pauseAutoRefetch() {
+      this.isPaused = !this.isPaused;
+      console.log(
+        `🔄 PAUSE BUTTON CLICKED - New state: ${
+          this.isPaused ? "PAUSED" : "RESUMED"
+        }`
+      );
+      console.log(`🔄 Auto-refetch enabled: ${this.isAutoRefetch}`);
+      console.log(`🔄 Current pending rows: ${this.pendingRows.length}`);
 
-      this.refetchTimer = setInterval(async () => {
-        if (this.manifestUrl) {
-          try {
-            await this.loadManifest();
-          } catch (error) {
-            console.error("Auto-refetch failed:", error);
-          }
+      if (this.isPaused) {
+        console.log(
+          "⏸️ PAUSED - MPDs will continue fetching but UI table will not update"
+        );
+        // Don't stop the timer - let it continue fetching in background
+        // Data will be queued in pendingRows instead of added to table
+      } else {
+        console.log(
+          "▶️ RESUMED - Processing all pending rows and updating table"
+        );
+        console.log(
+          `▶️ About to process ${this.pendingRows.length} pending rows`
+        );
+        // Add all pending rows to the table when resuming
+        this.processPendingRows();
+
+        // Don't restart auto-refetch if timer is already running
+        // The background timer should continue from where it left off
+        if (this.isAutoRefetch && !this.refetchTimer) {
+          console.log("▶️ Restarting auto-refetch timer (was stopped)");
+          this.startAutoRefetch();
+        } else {
+          console.log(
+            "▶️ Auto-refetch timer already running, continuing background fetching"
+          );
         }
-      }, this.refetchInterval * 1000);
-    },
-
-    stopAutoRefetch() {
-      if (this.refetchTimer) {
-        clearInterval(this.refetchTimer);
-        this.refetchTimer = null;
       }
     },
 
+    // Process all pending rows that were collected during pause
+    processPendingRows() {
+      console.log(
+        `📦 PROCESSING PENDING ROWS - Count: ${this.pendingRows.length}`
+      );
+      console.log(`📦 Pending rows data:`, this.pendingRows);
+
+      if (this.pendingRows.length === 0) {
+        console.log("📦 No pending rows to process");
+        return;
+      }
+
+      console.log(`📦 Processing ${this.pendingRows.length} pending rows`);
+      console.log(
+        `📦 Current table rows before adding: ${this.comparisonHistory.length}`
+      );
+
+      // Add all pending rows to the end of comparison history (maintains chronological order)
+      this.comparisonHistory.push(...this.pendingRows);
+
+      // Clear pending rows
+      const addedCount = this.pendingRows.length;
+      this.pendingRows = [];
+
+      console.log(`✅ Added ${addedCount} pending rows to table`);
+      console.log(
+        `✅ Total table rows after adding: ${this.comparisonHistory.length}`
+      );
+
+      // Force Vue to re-render the table to show all new rows
+      this.$nextTick(() => {
+        console.log(
+          "✅ Vue re-render completed, all pending rows should be visible"
+        );
+      });
+    },
+
+    startAutoRefetch() {
+      this.stopAutoRefetch(); // Clear any existing timer
+
+      // DASH-compliant polling: schedule next fetch based on MPD's minimumUpdatePeriod
+      this.scheduleNextMpdFetch();
+    },
+
+    stopAutoRefetch() {
+      console.log("🛑 STOP AUTO-REFETCH called");
+      if (this.refetchTimer) {
+        console.log("🛑 Clearing existing timer:", this.refetchTimer);
+        clearTimeout(this.refetchTimer);
+        this.refetchTimer = null;
+        console.log("🛑 Timer cleared and set to null");
+      } else {
+        console.log("🛑 No timer to clear");
+      }
+    },
+
+    // DASH-compliant MPD polling scheduler
+    scheduleNextMpdFetch() {
+      if (!this.isAutoRefetch) return; // Only stop if auto-refetch is completely disabled
+      // Continue scheduling even when paused - data will be queued instead of displayed
+
+      let nextFetchDelayMs;
+
+      // Extract minimumUpdatePeriod from current MPD (DASH-compliant way)
+      const mpdRefreshInterval = this.extractMpdDuration(this.currentManifest);
+
+      if (mpdRefreshInterval && mpdRefreshInterval > 0) {
+        // Use MPD's minimumUpdatePeriod (spec-compliant)
+        nextFetchDelayMs = mpdRefreshInterval * 1000;
+        console.log(
+          `DASH-compliant polling: Next fetch in ${mpdRefreshInterval}s (from minimumUpdatePeriod)`
+        );
+      } else {
+        // Safe fallback for static MPDs or missing minimumUpdatePeriod
+        nextFetchDelayMs = this.refetchInterval * 1000; // Use fallback interval from data
+        console.log(
+          `Fallback polling: Next fetch in ${this.refetchInterval}s (no minimumUpdatePeriod found)`
+        );
+      }
+
+      // Add jitter tolerance for production-grade behavior (200ms)
+      const jitterMs = 200;
+      const totalDelayMs = nextFetchDelayMs + jitterMs;
+
+      // Schedule next fetch using setTimeout (not setInterval)
+      console.log(
+        `⏰ Creating new timer with delay: ${totalDelayMs}ms, isPaused: ${this.isPaused}`
+      );
+      this.refetchTimer = setTimeout(async () => {
+        console.log(
+          `🔄 Timer callback triggered - isPaused: ${this.isPaused}, isAutoRefetch: ${this.isAutoRefetch}`
+        );
+
+        // Continue fetching even when paused (data will be queued)
+        if (!this.isAutoRefetch) {
+          console.log("🔄 Timer callback cancelled - auto-refetch disabled");
+          return;
+        }
+
+        if (this.manifestUrl) {
+          try {
+            console.log(
+              `🔄 Timer callback executing loadManifest${
+                this.isPaused ? " (PAUSED - will queue)" : ""
+              }`
+            );
+            await this.loadManifest();
+            // After successful fetch, schedule the next one based on the NEW MPD's minimumUpdatePeriod
+            this.scheduleNextMpdFetch();
+          } catch (error) {
+            console.error("Auto-refetch failed:", error);
+            // On error, retry with fallback delay
+            setTimeout(
+              () => this.scheduleNextMpdFetch(),
+              this.refetchInterval * 1000
+            );
+          }
+        }
+      }, totalDelayMs);
+      console.log(`⏰ Timer created with ID:`, this.refetchTimer);
+    },
+
     updateRefetchInterval() {
+      // Note: With DASH-compliant polling, the interval is determined by MPD's minimumUpdatePeriod
+      // This method is kept for UI compatibility but doesn't affect actual polling behavior
+      console.log(
+        "Note: Refresh interval is now determined by MPD's minimumUpdatePeriod, not manual setting"
+      );
+
       if (this.isAutoRefetch) {
-        this.startAutoRefetch(); // Restart with new interval
+        this.startAutoRefetch(); // Restart with DASH-compliant polling
       }
     },
 
@@ -2791,6 +4277,2406 @@ export default {
       );
       return metric ? metric.statusClass : "";
     },
+
+    // Detailed view method
+    getDetailedHistoryMetricValue(historyEntry, metricName) {
+      console.log("getDetailedHistoryMetricValue called with:", metricName);
+      console.log("historyEntry:", historyEntry);
+
+      const metric = historyEntry.data.find(
+        (item) => item.metric === metricName
+      );
+
+      console.log("Found metric:", metric);
+
+      if (!metric) {
+        console.log("No metric found for:", metricName);
+        return `No data for ${metricName}`;
+      }
+
+      console.log("Routing to detailed formatter for:", metricName);
+
+      // Return detailed XML-like format for specific metrics
+      switch (metricName) {
+        case "Total Periods":
+          return this.formatDetailedPeriods("total");
+        case "Content Periods":
+          return this.formatDetailedPeriods("content");
+        case "Ad Periods":
+          return this.formatDetailedPeriods("ad");
+        case "Number Period Added (provide Id)":
+          return this.formatDetailedPeriodsAddedRemoved("added", metric.value);
+        case "Number of Period Removed":
+          return this.formatDetailedPeriodsAddedRemoved(
+            "removed",
+            metric.value
+          );
+        case "Number of Segments Removed":
+          return this.formatDetailedSegmentChanges("removed", metric.value);
+        case "Number of Segments Added":
+          return this.formatDetailedSegmentChanges("added", metric.value);
+        case "Profile same in all Periods":
+          return this.formatDetailedProfileConsistency();
+        case "Video and Audio Duration are Same":
+          return this.formatDetailedDurationConsistency();
+        case "Start Time Correct?":
+          return this.formatDetailedStartTimeValidation();
+        case "Period Segment Added (Video)":
+          return this.formatDetailedPeriodSegmentChanges(
+            "video",
+            "added",
+            metric.value
+          );
+        case "Period Segment Removed (Video)":
+          return this.formatDetailedPeriodSegmentChanges(
+            "video",
+            "removed",
+            metric.value
+          );
+        case "Period Segment Added (Audio)":
+          return this.formatDetailedPeriodSegmentChanges(
+            "audio",
+            "added",
+            metric.value
+          );
+        case "Period Segment Removed (AUDIO)":
+          return this.formatDetailedPeriodSegmentChanges(
+            "audio",
+            "removed",
+            metric.value
+          );
+        case "Is Segment Timing Correct?":
+          return this.formatDetailedSegmentTiming();
+        case "Download Time vs Segment Duration":
+          return this.formatDetailedDownloadTimeValidation();
+        case "DRM Protection Status":
+          return this.formatDetailedDRMStatus();
+        case "DRM Signaling":
+          return this.formatDetailedDRMSignaling();
+        case "Period Start Time Comparison":
+          return this.formatDetailedPeriodStartTimeComparison();
+        case "Segments Same Across All Profiles":
+          return this.formatDetailedSegmentProfileEquivalence();
+        case "Period IDs Same as Previous MPD":
+          return this.formatDetailedPeriodIdConsistency();
+        case "Time Diff(s)":
+          return this.formatDetailedTimeDifferences();
+        case "Profile":
+        case "Switch Profile":
+          return ""; // Leave empty as requested
+        default:
+          console.log("Using default case for:", metricName);
+          return metric.value; // Return normal value for other metrics
+      }
+    },
+
+    formatDetailedPeriods(type) {
+      console.log("formatDetailedPeriods called with type:", type);
+      console.log("currentManifest exists:", !!this.currentManifest);
+
+      if (!this.currentManifest) {
+        console.log("No currentManifest available");
+        return "No manifest data available";
+      }
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+        console.log("Found periods:", periods.length);
+
+        if (periods.length === 0) {
+          return "No periods found in manifest";
+        }
+
+        let result = "";
+
+        // Restore proper filtering based on type
+        Array.from(periods).forEach((period, index) => {
+          console.log(`Processing period ${index}:`, period);
+
+          // Check if it's an ad period using the DOM element directly
+          const isAdPeriod = this.isAdPeriodFromDom(period);
+
+          console.log(`Period ${index} isAdPeriod:`, isAdPeriod);
+
+          let shouldInclude = false;
+          if (type === "total") {
+            shouldInclude = true; // Total shows all periods
+          } else if (type === "content" && !isAdPeriod) {
+            shouldInclude = true; // Content shows only non-ad periods
+          } else if (type === "ad" && isAdPeriod) {
+            shouldInclude = true; // Ad shows only ad periods
+          }
+
+          console.log(`Period ${index} shouldInclude:`, shouldInclude);
+
+          if (shouldInclude) {
+            // Show the actual Period XML from MPD
+            const serializer = new XMLSerializer();
+            let periodXml = serializer.serializeToString(period);
+            periodXml = this.formatXmlWithIndentation(periodXml, 0);
+            result += periodXml + "\n\n";
+          }
+        });
+
+        console.log(`Final result for ${type} - length:`, result.length);
+
+        // Return appropriate message if no periods match the filter
+        if (result.trim() === "") {
+          if (type === "content") {
+            return "No content periods found (all periods detected as ads)";
+          } else if (type === "ad") {
+            return "No ad periods found (all periods detected as content)";
+          } else {
+            return "No periods found";
+          }
+        }
+
+        return result.trim();
+      } catch (error) {
+        console.error("Error in formatDetailedPeriods:", error);
+        return `Error: ${error.message}`;
+      }
+    },
+
+    // Helper method to extract period data for filtering without modifying the display
+    extractPeriodDataForFiltering(periodElement) {
+      const adaptationSets = Array.from(
+        periodElement.querySelectorAll("AdaptationSet")
+      );
+      return {
+        AdaptationSet: adaptationSets.map((as) => ({
+          contentType: { parsed: as.getAttribute("contentType") },
+          mimeType: { parsed: as.getAttribute("mimeType") },
+        })),
+      };
+    },
+
+    formatDetailedPeriodsAddedRemoved(action, value) {
+      // eslint-disable-next-line no-unused-vars
+      if (value === "0" || !value) return "";
+
+      if (!this.currentManifest) return "";
+
+      try {
+        // Extract period IDs from the value string
+        const lines = value.split("\n");
+        const idLines = lines.slice(1);
+
+        let result = "";
+
+        idLines.forEach((idLine) => {
+          if (idLine.includes('Id="')) {
+            const idMatch = idLine.match(/Id="([^"]+)"/);
+            if (idMatch) {
+              const periodId = idMatch[1];
+
+              // Find the actual Period XML node in the MPD
+              const periods = this.currentManifest.querySelectorAll("Period");
+              for (let period of periods) {
+                const nodeId = period.getAttribute("id");
+                if (nodeId === periodId) {
+                  // Show the actual Period XML from MPD
+                  const serializer = new XMLSerializer();
+                  let periodXml = serializer.serializeToString(period);
+                  periodXml = this.formatXmlWithIndentation(periodXml, 0);
+                  result += periodXml + "\n";
+                  break;
+                }
+              }
+            }
+          }
+        });
+
+        return result || ""; // Return empty if no actual periods found
+      } catch (error) {
+        return ""; // No period data available
+      }
+    },
+
+    formatDetailedSegmentChanges(action, value) {
+      // eslint-disable-next-line no-unused-vars
+      if (value === "0" || !value) return "";
+
+      if (!this.currentManifest) return "";
+
+      try {
+        const lines = value.split("\n");
+        const periodLines = lines.slice(1);
+
+        let result = "";
+
+        periodLines.forEach((line) => {
+          const periodMatch = line.match(
+            /Period id="([^"]+)": (\w+) (\d+) seg/
+          );
+          if (periodMatch) {
+            const [, periodId] = periodMatch;
+
+            // Find the actual Period and show its SegmentTemplate/SegmentTimeline
+            const periods = this.currentManifest.querySelectorAll("Period");
+            for (let period of periods) {
+              const nodeId = period.getAttribute("id");
+              if (nodeId === periodId) {
+                result += `<Period id="${periodId}">\n`;
+
+                // Show actual SegmentTemplate elements from this period
+                const segmentTemplates =
+                  period.querySelectorAll("SegmentTemplate");
+                segmentTemplates.forEach((template) => {
+                  const serializer = new XMLSerializer();
+                  let templateXml = serializer.serializeToString(template);
+                  templateXml = this.formatXmlWithIndentation(templateXml, 2);
+                  result += templateXml + "\n";
+                });
+
+                result += `</Period>\n`;
+                break;
+              }
+            }
+          }
+        });
+
+        return result || ""; // Return empty if no actual segment data found
+      } catch (error) {
+        return ""; // No segment data available
+      }
+    },
+
+    formatDetailedProfileConsistency() {
+      // Only show actual MPD profiles attribute if it exists
+      if (!this.currentManifest) return "";
+
+      try {
+        const mpd = this.currentManifest.querySelector("MPD");
+        if (!mpd) return "";
+
+        // Extract actual profiles attribute from MPD root
+        const profiles = mpd.getAttribute("profiles");
+        if (!profiles) return ""; // No profile information in MPD
+
+        // Show just the profiles attribute value, no wrapper
+        return `profiles="${profiles}"`;
+      } catch (error) {
+        return ""; // No profile data available
+      }
+    },
+
+    formatDetailedDurationConsistency() {
+      // Show actual Period elements with duration-related attributes from MPD
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        periods.forEach((period) => {
+          const duration = period.getAttribute("duration");
+
+          if (duration) {
+            // Show the actual Period XML with all its content
+            const serializer = new XMLSerializer();
+            let periodXml = serializer.serializeToString(period);
+            periodXml = this.formatXmlWithIndentation(periodXml, 0);
+            result += periodXml + "\n\n";
+          }
+        });
+
+        return result.trim() || ""; // Return empty if no duration info found
+      } catch (error) {
+        return ""; // No duration data available
+      }
+    },
+
+    formatDetailedStartTimeValidation() {
+      // Show actual Period elements with start time attributes from MPD
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        periods.forEach((period) => {
+          const start = period.getAttribute("start");
+
+          // Only show periods that have actual start time attributes
+          if (start !== null) {
+            // Show the actual Period XML with all its content
+            const serializer = new XMLSerializer();
+            let periodXml = serializer.serializeToString(period);
+            periodXml = this.formatXmlWithIndentation(periodXml, 0);
+            result += periodXml + "\n\n";
+          }
+        });
+
+        return result.trim() || ""; // Return empty if no start time info found
+      } catch (error) {
+        return ""; // No start time data available
+      }
+    },
+
+    formatDetailedPeriodSegmentChanges(contentType, action, value) {
+      // eslint-disable-next-line no-unused-vars
+      if (value === "0" || !value) return "";
+
+      if (!this.currentManifest) return "";
+
+      try {
+        const lines = value.split("\n");
+
+        let result = "";
+
+        lines.forEach((line) => {
+          const periodMatch = line.match(
+            /Period id="([^"]+)": (\w+) (\d+) seg/
+          );
+          if (periodMatch) {
+            const [, periodId] = periodMatch;
+
+            // Find the actual Period and show its AdaptationSet for this contentType
+            const periods = this.currentManifest.querySelectorAll("Period");
+            for (let period of periods) {
+              const nodeId = period.getAttribute("id");
+              if (nodeId === periodId) {
+                result += `<Period id="${periodId}">\n`;
+
+                // Find AdaptationSet with matching contentType
+                const adaptationSets = period.querySelectorAll("AdaptationSet");
+                for (let as of adaptationSets) {
+                  const asContentType = as.getAttribute("contentType");
+                  if (asContentType === contentType) {
+                    const serializer = new XMLSerializer();
+                    let asXml = serializer.serializeToString(as);
+                    asXml = this.formatXmlWithIndentation(asXml, 2);
+                    result += asXml + "\n";
+                    break;
+                  }
+                }
+
+                result += `</Period>\n`;
+                break;
+              }
+            }
+          }
+        });
+
+        return result || ""; // Return empty if no actual data found
+      } catch (error) {
+        return ""; // No data available
+      }
+    },
+
+    formatDetailedSegmentTiming() {
+      // Show actual SegmentTemplate elements from MPD
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const segmentTemplates =
+          this.currentManifest.querySelectorAll("SegmentTemplate");
+
+        segmentTemplates.forEach((template) => {
+          const timescale = template.getAttribute("timescale");
+          const duration = template.getAttribute("duration");
+          const presentationTimeOffset = template.getAttribute(
+            "presentationTimeOffset"
+          );
+
+          // Only show if there are actual timing attributes
+          if (timescale || duration || presentationTimeOffset) {
+            // Show the actual SegmentTemplate XML with all its content
+            const serializer = new XMLSerializer();
+            let templateXml = serializer.serializeToString(template);
+            templateXml = this.formatXmlWithIndentation(templateXml, 0);
+            result += templateXml + "\n\n";
+          }
+        });
+
+        return result.trim() || ""; // Return empty if no timing info found
+      } catch (error) {
+        return ""; // No segment timing data available
+      }
+    },
+
+    // NEW DETAILED FORMATTING METHODS FOR NEW VALIDATIONS:
+
+    formatDetailedDownloadTimeValidation() {
+      // Show segment details with bandwidth and timing information
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        periods.forEach((period) => {
+          const periodId = period.getAttribute("id") || "unknown";
+          const adaptationSets = period.querySelectorAll("AdaptationSet");
+
+          adaptationSets.forEach((as) => {
+            const contentType = as.getAttribute("contentType") || "unknown";
+            const representations = as.querySelectorAll("Representation");
+
+            representations.forEach((rep) => {
+              const bandwidth = rep.getAttribute("bandwidth") || "unknown";
+              const width = rep.getAttribute("width") || "?";
+              const height = rep.getAttribute("height") || "?";
+              const codecs = rep.getAttribute("codecs") || "unknown";
+
+              if (rep.querySelector("SegmentTemplate")) {
+                result += `<Period id="${periodId}">\n`;
+                result += `  <AdaptationSet contentType="${contentType}">\n`;
+                result += `    <Representation bandwidth="${bandwidth}" width="${width}" height="${height}" codecs="${codecs}">\n`;
+
+                const segmentTemplate = rep.querySelector("SegmentTemplate");
+                const serializer = new XMLSerializer();
+                let templateXml = serializer.serializeToString(segmentTemplate);
+                templateXml = this.formatXmlWithIndentation(templateXml, 6);
+                result += templateXml + "\n";
+
+                result += `    </Representation>\n`;
+                result += `  </AdaptationSet>\n`;
+                result += `</Period>\n\n`;
+              }
+            });
+          });
+        });
+
+        return result.trim() || "";
+      } catch (error) {
+        return "";
+      }
+    },
+
+    formatDetailedDRMStatus() {
+      // Show actual ContentProtection elements from MPD
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+
+        // MPD-level ContentProtection
+        const mpdContentProtections = this.currentManifest.querySelectorAll(
+          "MPD > ContentProtection"
+        );
+        if (mpdContentProtections.length > 0) {
+          result += "MPD-level ContentProtection:\n";
+          Array.from(mpdContentProtections).forEach((cp) => {
+            const serializer = new XMLSerializer();
+            let cpXml = serializer.serializeToString(cp);
+            cpXml = this.formatXmlWithIndentation(cpXml, 0);
+            result += cpXml + "\n\n";
+          });
+        }
+
+        // Period-level ContentProtection
+        const periods = this.currentManifest.querySelectorAll("Period");
+        periods.forEach((period) => {
+          const periodId = period.getAttribute("id") || "unknown";
+          const contentProtections =
+            period.querySelectorAll("ContentProtection");
+
+          if (contentProtections.length > 0) {
+            result += `Period ${periodId} ContentProtection:\n`;
+            Array.from(contentProtections).forEach((cp) => {
+              const serializer = new XMLSerializer();
+              let cpXml = serializer.serializeToString(cp);
+              cpXml = this.formatXmlWithIndentation(cpXml, 0);
+              result += cpXml + "\n\n";
+            });
+          }
+        });
+
+        return result.trim() || "No ContentProtection elements found";
+      } catch (error) {
+        return "";
+      }
+    },
+
+    formatDetailedDRMSignaling() {
+      // Show production-grade DRM signaling analysis with semantic comparison
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+
+        // Extract current DRM signaling info
+        const currentDrmInfo = this.extractDRMSignalingInfo(
+          this.currentManifest
+        );
+
+        if (currentDrmInfo.hasDRM) {
+          result += "=== CURRENT DRM SIGNALING ===\n";
+          result += currentDrmInfo.details + "\n\n";
+
+          // Show raw ContentProtection elements for reference
+          result += "=== RAW CONTENTPROTECTION ELEMENTS ===\n";
+          const contentProtections = [
+            ...Array.from(
+              this.currentManifest.querySelectorAll("MPD > ContentProtection")
+            ),
+            ...Array.from(
+              this.currentManifest.querySelectorAll("Period ContentProtection")
+            ),
+            ...Array.from(
+              this.currentManifest.querySelectorAll(
+                "AdaptationSet ContentProtection"
+              )
+            ),
+            ...Array.from(
+              this.currentManifest.querySelectorAll(
+                "Representation ContentProtection"
+              )
+            ),
+          ];
+
+          contentProtections.forEach((cp, index) => {
+            const location = this.getContentProtectionLocation(cp);
+            result += `[${index + 1}] ${location}:\n`;
+
+            const serializer = new XMLSerializer();
+            let cpXml = serializer.serializeToString(cp);
+            cpXml = this.formatXmlWithIndentation(cpXml, 2);
+            result += cpXml + "\n\n";
+          });
+        } else {
+          result += "No DRM signaling found in current manifest";
+        }
+
+        // If there's a previous manifest, show comparison
+        if (this.previousManifest) {
+          const previousDrmInfo = this.extractDRMSignalingInfo(
+            this.previousManifest
+          );
+
+          result += "\n=== COMPARISON WITH PREVIOUS ===\n";
+
+          if (previousDrmInfo.hasDRM) {
+            result += "Previous DRM signaling:\n";
+            result += previousDrmInfo.details + "\n\n";
+          } else {
+            result += "Previous manifest had no DRM signaling\n\n";
+          }
+
+          // Show semantic comparison
+          const comparison = this.compareDRMSignaling(
+            previousDrmInfo,
+            currentDrmInfo
+          );
+          result += "Semantic Analysis:\n";
+          result += `Status: ${comparison.status}\n`;
+          result += `Changed: ${comparison.changed ? "YES" : "NO"}\n`;
+          if (comparison.changed) {
+            result += `Changes: ${comparison.summary}\n`;
+          }
+          result += `Details:\n${comparison.details}`;
+        }
+
+        return result.trim();
+      } catch (error) {
+        return `DRM signaling analysis failed: ${error.message}`;
+      }
+    },
+
+    formatDetailedPeriodStartTimeComparison() {
+      // Show Period elements with start and duration attributes
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        periods.forEach((period) => {
+          const start = period.getAttribute("start");
+          const duration = period.getAttribute("duration");
+          const id = period.getAttribute("id");
+
+          if (start !== null || duration !== null) {
+            result += `<Period`;
+            if (id) result += ` id="${id}"`;
+            if (start) result += ` start="${start}"`;
+            if (duration) result += ` duration="${duration}"`;
+            result += ` />\n`;
+          }
+        });
+
+        return result.trim() || "";
+      } catch (error) {
+        return "";
+      }
+    },
+
+    formatDetailedSegmentProfileEquivalence() {
+      // Show SegmentTemplate elements from different representations for comparison
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        periods.forEach((period) => {
+          const periodId = period.getAttribute("id") || "unknown";
+          const adaptationSets = period.querySelectorAll("AdaptationSet");
+
+          adaptationSets.forEach((as, asIndex) => {
+            const contentType = as.getAttribute("contentType") || "unknown";
+            const representations = as.querySelectorAll("Representation");
+
+            if (representations.length > 1) {
+              result += `Period ${periodId} AdaptationSet[${asIndex}] (${contentType}) - Multiple Representations:\n`;
+
+              Array.from(representations).forEach((rep, repIndex) => {
+                const bandwidth = rep.getAttribute("bandwidth") || "unknown";
+                result += `  Representation[${repIndex}] (${bandwidth} bps):\n`;
+
+                const segmentTemplate = rep.querySelector("SegmentTemplate");
+                if (segmentTemplate) {
+                  const serializer = new XMLSerializer();
+                  let templateXml =
+                    serializer.serializeToString(segmentTemplate);
+                  templateXml = this.formatXmlWithIndentation(templateXml, 4);
+                  result += templateXml + "\n\n";
+                }
+              });
+            }
+          });
+        });
+
+        return result.trim() || "";
+      } catch (error) {
+        return "";
+      }
+    },
+
+    formatDetailedPeriodIdConsistency() {
+      // Show Period IDs from current and previous MPD for comparison
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "Current MPD Period IDs:\n";
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        Array.from(periods).forEach((period, index) => {
+          const id = period.getAttribute("id") || `period_${index}`;
+          result += `  [${index}] "${id}"\n`;
+        });
+
+        if (this.previousManifest) {
+          result += "\nPrevious MPD Period IDs:\n";
+          const previousPeriods =
+            this.previousManifest.querySelectorAll("Period");
+
+          Array.from(previousPeriods).forEach((period, index) => {
+            const id = period.getAttribute("id") || `period_${index}`;
+            result += `  [${index}] "${id}"\n`;
+          });
+        } else {
+          result += "\nNo previous MPD available for comparison";
+        }
+
+        return result.trim();
+      } catch (error) {
+        return "";
+      }
+    },
+
+    formatDetailedTimeDifferences() {
+      // Only show actual timing-related attributes from MPD if there are differences
+      if (!this.currentManifest) return "";
+
+      try {
+        let result = "";
+        const mpd = this.currentManifest.querySelector("MPD");
+
+        if (mpd) {
+          // Show MPD-level timing attributes that might be relevant to time differences
+          const timingAttrs = [
+            "availabilityStartTime",
+            "publishTime",
+            "minimumUpdatePeriod",
+            "timeShiftBufferDepth",
+          ];
+
+          timingAttrs.forEach((attr) => {
+            const attrValue = mpd.getAttribute(attr);
+            if (attrValue) {
+              result += `${attr}="${attrValue}"\n`;
+            }
+          });
+        }
+
+        return result.trim() || "";
+      } catch (error) {
+        return ""; // No timing data available
+      }
+    },
+
+    // Combined periods methods for the new unified column
+    getCombinedNormalPeriods(historyEntry) {
+      const totalPeriods = this.getHistoryMetricValue(
+        historyEntry,
+        "Total Periods"
+      );
+      const contentPeriods = this.getHistoryMetricValue(
+        historyEntry,
+        "Content Periods"
+      );
+      const adPeriods = this.getHistoryMetricValue(historyEntry, "Ad Periods");
+
+      // Extract period information from the current manifest
+      const periodInfo = this.extractPeriodInfoForDisplay();
+
+      console.log("Combined normal periods:", {
+        totalPeriods,
+        contentPeriods,
+        adPeriods,
+        periodInfo,
+      });
+
+      return `Total: ${totalPeriods} | Content: ${contentPeriods} | Ad: ${adPeriods}\n${periodInfo}`;
+    },
+
+    getPeriodsForDisplay() {
+      if (!this.currentManifest) return [];
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+        const duplicateIds = this.findDuplicatePeriodIds(periods);
+
+        return Array.from(periods).map((period, index) => {
+          const periodId = period.getAttribute("id") || `period_${index}`;
+          const periodStart = period.getAttribute("start") || "";
+
+          // Check if this ID is a duplicate
+          const isDuplicate = duplicateIds.includes(periodId);
+
+          // Truncate long IDs for display
+          const truncatedId =
+            periodId.length > 10 ? `${periodId.substring(0, 10)}...` : periodId;
+          const truncatedStart =
+            periodStart.length > 15
+              ? `${periodStart.substring(0, 15)}...`
+              : periodStart;
+
+          // Get or initialize expand state
+          if (!this.expandData.periods[index]) {
+            this.$set(this.expandData.periods, index, { expanded: false });
+          }
+
+          return {
+            index,
+            periodId,
+            periodStart,
+            isDuplicate,
+            full: `start="${periodStart}" id="${periodId}"`,
+            truncated: `start="${truncatedStart}" id="${truncatedId}"`,
+            expanded: this.expandData.periods[index].expanded,
+          };
+        });
+      } catch (error) {
+        console.error("Error in getPeriodsForDisplay:", error);
+        return [];
+      }
+    },
+
+    getCombinedDetailedPeriods() {
+      if (!this.currentManifest) return "No manifest data available";
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+        const duplicateIds = this.findDuplicatePeriodIds(periods);
+
+        let result = "";
+
+        Array.from(periods).forEach((period, index) => {
+          const periodId = period.getAttribute("id") || `period_${index}`;
+          const periodStart = period.getAttribute("start") || "";
+
+          // Check if this ID is a duplicate
+          const isDuplicate = duplicateIds.includes(periodId);
+
+          // Truncate long IDs for display
+          const truncatedId =
+            periodId.length > 10 ? `${periodId.substring(0, 10)}...` : periodId;
+          const truncatedStart =
+            periodStart.length > 15
+              ? `${periodStart.substring(0, 15)}...`
+              : periodStart;
+
+          // Store data in Vue component data instead of global window object
+          if (!this.expandData) {
+            this.$set(this, "expandData", {});
+          }
+          if (!this.expandData.periods) {
+            this.$set(this.expandData, "periods", {});
+          }
+
+          this.$set(this.expandData.periods, index, {
+            full: `start="${periodStart}" id="${periodId}"`,
+            truncated: `start="${truncatedStart}" id="${truncatedId}"`,
+            expanded: false,
+          });
+
+          const bgClass = isDuplicate ? "duplicate-period-id" : "";
+          const isExpanded = this.expandData.periods[index].expanded;
+          const displayContent = isExpanded
+            ? `<div class="expanded-details-header"><strong>Expanded Details:</strong></div><div class="expanded-details-content">${this.expandData.periods[index].full}</div>`
+            : this.expandData.periods[index].truncated;
+
+          console.log(
+            `Period ${index}: storing data:`,
+            this.expandData.periods[index]
+          );
+
+          result += `
+            <div class="period-item ${bgClass}">
+              <span class="period-content">
+                ${displayContent}
+              </span>
+              <button class="expand-btn" onclick="window.vueComponent.togglePeriodExpansion(${index})" title="Click to expand full details">
+                ${isExpanded ? "▼ Collapse" : "▶ Expand"}
+              </button>
+            </div>
+          `;
+        });
+
+        return result;
+      } catch (error) {
+        console.error("Error in getCombinedDetailedPeriods:", error);
+        return "Error displaying period details";
+      }
+    },
+
+    extractPeriodInfoForDisplay() {
+      if (!this.currentManifest) return "";
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+        const periodIds = Array.from(periods).map((period, index) => {
+          const id = period.getAttribute("id") || `period_${index}`;
+          return `id="${id}"`;
+        });
+
+        return periodIds.join(", ");
+      } catch (error) {
+        return "";
+      }
+    },
+
+    findDuplicatePeriodIds(periods) {
+      const idCounts = {};
+      const duplicates = [];
+
+      Array.from(periods).forEach((period, index) => {
+        const id = period.getAttribute("id") || `period_${index}`;
+        idCounts[id] = (idCounts[id] || 0) + 1;
+      });
+
+      Object.keys(idCounts).forEach((id) => {
+        if (idCounts[id] > 1) {
+          duplicates.push(id);
+        }
+      });
+
+      return duplicates;
+    },
+
+    // Combined start time methods for the Start Time Correct column
+    getCombinedNormalStartTime(historyEntry) {
+      const startTimeValue = this.getHistoryMetricValue(
+        historyEntry,
+        "Start Time Correct?"
+      );
+
+      // For normal view, show simple Yes/No plus basic period info
+      const isCorrect =
+        startTimeValue.includes("Yes") || startTimeValue === "Yes";
+      const simpleStatus = isCorrect ? "Yes" : "No";
+
+      // Extract period information for normal view (just period ID and start)
+      const periodStartInfo = this.extractPeriodStartInfoForDisplay();
+
+      return `${simpleStatus}\n${periodStartInfo}`;
+    },
+
+    getStartTimesForDisplay(rowIndex) {
+      if (!this.currentManifest) return [];
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        return Array.from(periods).map((period, index) => {
+          const periodId = period.getAttribute("id") || `period_${index}`;
+          const periodStart = period.getAttribute("start") || "";
+
+          // Truncate long IDs and start times for display
+          const truncatedId =
+            periodId.length > 10 ? `${periodId.substring(0, 10)}...` : periodId;
+          const truncatedStart =
+            periodStart.length > 15
+              ? `${periodStart.substring(0, 15)}...`
+              : periodStart;
+
+          // Get or initialize expand state
+          const key = `${rowIndex}_${index}`;
+          if (!this.expandData.startTimes[key]) {
+            this.$set(this.expandData.startTimes, key, { expanded: false });
+          }
+
+          return {
+            index,
+            rowIndex,
+            key,
+            periodId,
+            periodStart,
+            full: `Period id="${periodId}" start="${periodStart}"`,
+            truncated: `Period id="${truncatedId}" start="${truncatedStart}"`,
+            expanded: this.expandData.startTimes[key].expanded,
+          };
+        });
+      } catch (error) {
+        console.error("Error in getStartTimesForDisplay:", error);
+        return [];
+      }
+    },
+
+    getCombinedDetailedStartTime(rowIndex) {
+      if (!this.currentManifest) return "No manifest data available";
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+
+        let result = "";
+
+        Array.from(periods).forEach((period, index) => {
+          const periodId = period.getAttribute("id") || `period_${index}`;
+          const periodStart = period.getAttribute("start") || "";
+
+          // Truncate long IDs and start times for display
+          const truncatedId =
+            periodId.length > 10 ? `${periodId.substring(0, 10)}...` : periodId;
+          const truncatedStart =
+            periodStart.length > 15
+              ? `${periodStart.substring(0, 15)}...`
+              : periodStart;
+
+          // Store data in Vue component data instead of global window object
+          if (!this.expandData.startTimes) {
+            this.$set(this.expandData, "startTimes", {});
+          }
+
+          const key = `${rowIndex}_${index}`;
+          this.$set(this.expandData.startTimes, key, {
+            full: `Period id="${periodId}" start="${periodStart}"`,
+            truncated: `Period id="${truncatedId}" start="${truncatedStart}"`,
+            expanded: false,
+          });
+
+          const isExpanded = this.expandData.startTimes[key].expanded;
+          const displayContent = isExpanded
+            ? `<div class="expanded-details-header"><strong>Expanded Details:</strong></div><div class="expanded-details-content">${this.expandData.startTimes[key].full}</div>`
+            : this.expandData.startTimes[key].truncated;
+
+          console.log(
+            `StartTime ${key}: storing data:`,
+            this.expandData.startTimes[key]
+          );
+
+          result += `
+            <div class="start-time-item">
+              <span class="start-time-content">
+                ${displayContent}
+              </span>
+              <button class="expand-btn" onclick="window.vueComponent.toggleStartTimeExpansion(${rowIndex}, ${index})" title="Click to expand full details">
+                ${isExpanded ? "▼ Collapse" : "▶ Expand"}
+              </button>
+            </div>
+          `;
+        });
+
+        return result;
+      } catch (error) {
+        console.error("Error in getCombinedDetailedStartTime:", error);
+        return "Error displaying start time details";
+      }
+    },
+
+    extractPeriodStartInfoForDisplay() {
+      if (!this.currentManifest) return "";
+
+      try {
+        const periods = this.currentManifest.querySelectorAll("Period");
+        const periodInfo = Array.from(periods).map((period, index) => {
+          const id = period.getAttribute("id") || `period_${index}`;
+          const start = period.getAttribute("start") || "0";
+          return `id="${id}" start="${start}"`;
+        });
+
+        return periodInfo.join(", ");
+      } catch (error) {
+        return "";
+      }
+    },
+
+    // Add the missing formatXmlWithIndentation method
+    formatXmlWithIndentation(xmlString, baseIndent = 0) {
+      try {
+        // Simple XML formatting with proper indentation
+        let formatted = "";
+        let currentIndent = baseIndent;
+
+        // Split by tags and format
+        const parts = xmlString.split(/(<[^>]*>)/);
+
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i].trim();
+          if (!part) continue;
+
+          if (part.startsWith("</")) {
+            // Closing tag
+            currentIndent--;
+            formatted += "  ".repeat(Math.max(0, currentIndent)) + part + "\n";
+          } else if (part.startsWith("<") && part.endsWith("/>")) {
+            // Self-closing tag
+            formatted += "  ".repeat(currentIndent) + part + "\n";
+          } else if (part.startsWith("<")) {
+            // Opening tag
+            formatted += "  ".repeat(currentIndent) + part + "\n";
+            if (!part.includes("<?xml") && !part.includes("<!")) {
+              currentIndent++;
+            }
+          } else {
+            // Text content
+            if (part.length > 0) {
+              formatted += "  ".repeat(currentIndent) + part + "\n";
+            }
+          }
+        }
+
+        return formatted.trim();
+      } catch (error) {
+        console.warn("XML formatting failed:", error);
+        return xmlString;
+      }
+    },
+
+    // Scroll position preservation methods
+    preserveScrollPosition() {
+      const tableWrapper = document.querySelector(".table-wrapper");
+      if (tableWrapper) {
+        this.scrollPosition = tableWrapper.scrollTop;
+      }
+    },
+
+    restoreScrollPosition() {
+      const tableWrapper = document.querySelector(".table-wrapper");
+      if (tableWrapper && this.scrollPosition !== undefined) {
+        tableWrapper.scrollTop = this.scrollPosition;
+      }
+    },
+
+    // Toggle methods for expand/collapse functionality
+    togglePeriodExpansion(periodIndex) {
+      console.log("🔍 === PERIOD EXPANSION TOGGLE DEBUG ===");
+      console.log("🔍 Period Index:", periodIndex);
+      console.log("🔍 Function called successfully!");
+
+      // Initialize expand data if needed
+      if (!this.expandData.periods[periodIndex]) {
+        this.$set(this.expandData.periods, periodIndex, { expanded: false });
+      }
+
+      const currentState = this.expandData.periods[periodIndex].expanded;
+      console.log("🔍 Current expanded state:", currentState);
+
+      // Toggle the expanded state
+      this.$set(
+        this.expandData.periods[periodIndex],
+        "expanded",
+        !currentState
+      );
+
+      console.log(
+        "🔍 Toggled to expanded:",
+        this.expandData.periods[periodIndex].expanded
+      );
+      console.log("🔍 === END PERIOD EXPANSION TOGGLE DEBUG ===");
+    },
+
+    toggleStartTimeExpansion(rowIndex, periodIndex) {
+      console.log("🕒 === START TIME EXPANSION TOGGLE DEBUG ===");
+      const key = `${rowIndex}_${periodIndex}`;
+      console.log("🕒 Key:", key, "Row:", rowIndex, "Period:", periodIndex);
+      console.log("🕒 Function called successfully!");
+
+      // Initialize expand data if needed
+      if (!this.expandData.startTimes[key]) {
+        this.$set(this.expandData.startTimes, key, { expanded: false });
+      }
+
+      const currentState = this.expandData.startTimes[key].expanded;
+      console.log("🕒 Current expanded state:", currentState);
+
+      // Toggle the expanded state
+      this.$set(this.expandData.startTimes[key], "expanded", !currentState);
+
+      console.log(
+        "🕒 Toggled to expanded:",
+        this.expandData.startTimes[key].expanded
+      );
+      console.log("🕒 === END START TIME EXPANSION TOGGLE DEBUG ===");
+    },
+
+    // Extract MPD duration from manifest
+    // Extract MPD refresh interval from manifest (NOT content duration)
+    extractMpdDuration(manifest) {
+      if (!manifest) return null;
+
+      try {
+        const mpdElement = manifest.querySelector("MPD");
+        if (!mpdElement) return null;
+
+        console.log("=== MPD REFRESH INTERVAL EXTRACTION DEBUG ===");
+        console.log("MPD element found, extracting refresh interval...");
+
+        // Log all MPD attributes for debugging
+        const mpdAttrs = {};
+        for (let attr of mpdElement.attributes) {
+          mpdAttrs[attr.name] = attr.value;
+        }
+        console.log("All MPD attributes:", mpdAttrs);
+
+        // 1. Primary: Check for minimumUpdatePeriod (spec-compliant way)
+        const minimumUpdatePeriod = mpdElement.getAttribute(
+          "minimumUpdatePeriod"
+        );
+        if (minimumUpdatePeriod) {
+          console.log("Found minimumUpdatePeriod:", minimumUpdatePeriod);
+          const parsedInterval =
+            this.parseIsoDurationToSeconds(minimumUpdatePeriod);
+          console.log("Parsed minimumUpdatePeriod to seconds:", parsedInterval);
+          return parsedInterval;
+        }
+
+        // 2. Fallback: Check publishTime delta (if we have previous MPD)
+        const publishTime = mpdElement.getAttribute("publishTime");
+        if (publishTime && this.previousMpdPublishTime) {
+          console.log("Current publishTime:", publishTime);
+          console.log("Previous publishTime:", this.previousMpdPublishTime);
+
+          const currentTime = new Date(publishTime);
+          const previousTime = new Date(this.previousMpdPublishTime);
+          const deltaSeconds =
+            (currentTime.getTime() - previousTime.getTime()) / 1000;
+
+          if (deltaSeconds > 0 && deltaSeconds < 300) {
+            // Reasonable range: 0-300 seconds
+            console.log(
+              "Calculated publishTime delta:",
+              deltaSeconds,
+              "seconds"
+            );
+            return deltaSeconds;
+          }
+        }
+
+        // Store current publishTime for next comparison
+        if (publishTime) {
+          this.previousMpdPublishTime = publishTime;
+        }
+
+        // 3. Check MPD type
+        const type = mpdElement.getAttribute("type");
+        console.log("MPD type:", type);
+
+        if (type === "static") {
+          console.log("Static MPD - no refresh interval needed");
+          return null; // Static MPDs don't refresh
+        }
+
+        console.log(
+          "Dynamic MPD but no minimumUpdatePeriod or publishTime delta available"
+        );
+        console.log("=== END MPD REFRESH INTERVAL EXTRACTION DEBUG ===");
+        return null; // Cannot determine refresh interval
+      } catch (error) {
+        console.error("Failed to extract MPD refresh interval:", error);
+        return null;
+      }
+    },
+
+    // Calculate period duration from segment timeline
+    calculatePeriodDurationFromSegments(period) {
+      try {
+        const adaptationSets = period.querySelectorAll("AdaptationSet");
+        if (adaptationSets.length === 0) return 0;
+
+        // Use the first adaptation set to get timeline
+        const firstAS = adaptationSets[0];
+        const representations = firstAS.querySelectorAll("Representation");
+        if (representations.length === 0) return 0;
+
+        // Use the first representation to get segment timeline
+        const firstRep = representations[0];
+        const segmentTemplate = firstRep.querySelector("SegmentTemplate");
+        if (!segmentTemplate) return 0;
+
+        const segmentTimeline =
+          segmentTemplate.querySelector("SegmentTimeline");
+        if (!segmentTimeline) return 0;
+
+        const sElements = segmentTimeline.querySelectorAll("S");
+        if (sElements.length === 0) return 0;
+
+        const timescale = parseInt(
+          segmentTemplate.getAttribute("timescale") || "1"
+        );
+        let totalTicks = 0;
+
+        Array.from(sElements).forEach((s) => {
+          const duration = parseInt(s.getAttribute("d") || "0");
+          const repeat = parseInt(s.getAttribute("r") || "0");
+          totalTicks += duration * (repeat + 1);
+        });
+
+        return totalTicks / timescale;
+      } catch (error) {
+        console.warn(
+          "Failed to calculate period duration from segments:",
+          error
+        );
+        return 0;
+      }
+    },
+
+    // Parse ISO 8601 duration to seconds
+    // Parse ISO 8601 duration to seconds (spec-compliant)
+    parseIsoDurationToSeconds(duration) {
+      if (!duration) return 0;
+
+      console.log("Parsing ISO 8601 duration:", duration);
+
+      // Handle PT format (e.g., PT2S, PT4.5S, PT1M, PT1H30M45S)
+      const ptMatch = duration.match(
+        /^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$/
+      );
+      if (ptMatch) {
+        const hours = parseFloat(ptMatch[1] || 0);
+        const minutes = parseFloat(ptMatch[2] || 0);
+        const seconds = parseFloat(ptMatch[3] || 0);
+        const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+        console.log(
+          `Parsed PT format: ${hours}h ${minutes}m ${seconds}s = ${totalSeconds} seconds`
+        );
+        return totalSeconds;
+      }
+
+      // Handle P format with days (e.g., P1DT2H3M4S)
+      const pMatch = duration.match(
+        /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/
+      );
+      if (pMatch) {
+        const days = parseFloat(pMatch[1] || 0);
+        const hours = parseFloat(pMatch[2] || 0);
+        const minutes = parseFloat(pMatch[3] || 0);
+        const seconds = parseFloat(pMatch[4] || 0);
+        const totalSeconds =
+          days * 86400 + hours * 3600 + minutes * 60 + seconds;
+        console.log(
+          `Parsed P format: ${days}d ${hours}h ${minutes}m ${seconds}s = ${totalSeconds} seconds`
+        );
+        return totalSeconds;
+      }
+
+      console.warn("Could not parse ISO 8601 duration:", duration);
+      return 0;
+    },
+
+    // Legacy method for backward compatibility (keep for other duration parsing)
+    parseDurationToSeconds(duration) {
+      return this.parseIsoDurationToSeconds(duration);
+    },
+
+    // NEW VALIDATION METHODS REQUESTED BY USER:
+
+    // REMOVED: Download time validation cannot be accurately done in frontend
+    // This requires real network measurements, CDN behavior analysis, and TCP slow start knowledge
+    // eslint-disable-next-line no-unused-vars
+    validateDownloadTimeVsSegmentDuration(periods) {
+      console.warn(
+        "Download time validation is not reliable in frontend - requires backend measurement"
+      );
+
+      return {
+        valid: true, // Always pass since we can't measure accurately
+        issues: [],
+        segmentDetails:
+          "Download time validation requires backend measurement with real network conditions",
+      };
+    },
+
+    // Helper method to estimate segment download time
+    estimateSegmentDownloadTime(representation, segmentDurationSeconds) {
+      // This is a simplified estimation - in real implementation, you'd measure actual download times
+      const bandwidth = representation.bandwidth?.parsed || 1000000; // Default 1 Mbps
+      const estimatedSegmentSize = (bandwidth * segmentDurationSeconds) / 8; // Convert to bytes
+
+      // Assume network bandwidth (this would be measured in real implementation)
+      const assumedNetworkBandwidth = 5000000; // 5 Mbps assumption
+      const downloadTime = estimatedSegmentSize / (assumedNetworkBandwidth / 8);
+
+      return downloadTime;
+    },
+
+    // 2. Validate DRM Presence
+    validateDRMPresence(periods) {
+      const drmSystems = [];
+      const details = [];
+      let hasDRM = false;
+
+      try {
+        // Check MPD-level ContentProtection
+        if (this.currentManifest) {
+          const mpdContentProtections = this.currentManifest.querySelectorAll(
+            "MPD > ContentProtection"
+          );
+          if (mpdContentProtections.length > 0) {
+            hasDRM = true;
+            Array.from(mpdContentProtections).forEach((cp) => {
+              const schemeId = cp.getAttribute("schemeIdUri") || "Unknown";
+              drmSystems.push(`MPD-level: ${schemeId}`);
+            });
+          }
+        }
+
+        periods.forEach((period, periodIndex) => {
+          const periodId =
+            period.id?.parsed ||
+            period.id?.raw ||
+            period.id ||
+            `period_${periodIndex}`;
+          const adaptationSets = this.ensureArray(period.AdaptationSet);
+
+          adaptationSets.forEach((as, asIndex) => {
+            // Check AdaptationSet-level ContentProtection
+            if (as.ContentProtection && as.ContentProtection.length > 0) {
+              hasDRM = true;
+              as.ContentProtection.forEach((cp) => {
+                const schemeId = cp.schemeIdUri || "Unknown";
+                drmSystems.push(`Period ${periodId}.AS${asIndex}: ${schemeId}`);
+              });
+            }
+
+            const representations = this.ensureArray(as.Representation);
+            representations.forEach((rep, repIndex) => {
+              // Check Representation-level ContentProtection
+              if (rep.ContentProtection && rep.ContentProtection.length > 0) {
+                hasDRM = true;
+                rep.ContentProtection.forEach((cp) => {
+                  const schemeId = cp.schemeIdUri || "Unknown";
+                  drmSystems.push(
+                    `Period ${periodId}.AS${asIndex}.Rep${repIndex}: ${schemeId}`
+                  );
+                });
+              }
+            });
+          });
+        });
+
+        if (hasDRM) {
+          details.push(
+            `Found ${drmSystems.length} DRM system(s) across MPD, AdaptationSet, and Representation levels`
+          );
+        } else {
+          details.push(
+            "No ContentProtection elements found at any level (MPD, AdaptationSet, or Representation)"
+          );
+        }
+      } catch (error) {
+        console.error("DRM validation failed:", error);
+        details.push("DRM validation failed");
+      }
+
+      return {
+        hasDRM,
+        drmSystems: [...new Set(drmSystems)], // Remove duplicates
+        details: details.join("\n"),
+      };
+    },
+
+    // PRODUCTION-GRADE: DRM Signaling validation with semantic comparison
+    // eslint-disable-next-line no-unused-vars
+    async validateDRMSignaling(periods) {
+      try {
+        console.log("=== DRM SIGNALING VALIDATION (PRODUCTION-GRADE) ===");
+
+        if (!this.previousManifest) {
+          const currentDrmInfo = this.extractDRMSignalingInfo(
+            this.currentManifest
+          );
+          return {
+            summary: currentDrmInfo.hasDRM
+              ? `Current: ${currentDrmInfo.summary}`
+              : "No DRM",
+            status: "INFO",
+            statusClass: "status-info",
+            changed: false,
+            details: currentDrmInfo.hasDRM
+              ? `Initial DRM state:\n${currentDrmInfo.details}`
+              : "No previous manifest to compare against",
+          };
+        }
+
+        // Extract normalized DRM info from both manifests
+        const currentDrmInfo = this.extractDRMSignalingInfo(
+          this.currentManifest
+        );
+        const previousDrmInfo = this.extractDRMSignalingInfo(
+          this.previousManifest
+        );
+
+        console.log("Current DRM info:", currentDrmInfo);
+        console.log("Previous DRM info:", previousDrmInfo);
+
+        // Perform semantic comparison
+        const comparison = this.compareDRMSignaling(
+          previousDrmInfo,
+          currentDrmInfo
+        );
+
+        console.log("DRM signaling comparison result:", comparison);
+        console.log("=== END DRM SIGNALING VALIDATION ===");
+
+        return {
+          summary: comparison.summary,
+          status: comparison.status,
+          statusClass: comparison.statusClass,
+          changed: comparison.changed,
+          details: comparison.details,
+        };
+      } catch (error) {
+        console.error("DRM signaling validation failed:", error);
+        return {
+          summary: "Validation failed",
+          status: "ERROR",
+          statusClass: "status-error",
+          changed: false,
+          details: `DRM signaling validation failed: ${error.message}`,
+        };
+      }
+    },
+
+    // PRODUCTION-GRADE: Extract DRM signaling with proper DASH inheritance resolution
+    extractDRMSignalingInfo(manifest) {
+      const drmInfo = {
+        hasDRM: false,
+        effectiveDrmSystems: new Set(), // Deduplicated effective DRM systems
+        cencSystems: [],
+        otherSystems: [],
+        summary: "",
+        details: "",
+      };
+
+      if (!manifest) {
+        return drmInfo;
+      }
+
+      try {
+        console.log("=== EXTRACTING DRM WITH DASH INHERITANCE RESOLUTION ===");
+
+        // STEP 1: Extract MPD-level ContentProtection (inherited by all)
+        const mpdContentProtections = this.extractContentProtectionElements(
+          manifest.querySelector("MPD")
+        );
+        console.log(
+          `MPD-level ContentProtection: ${mpdContentProtections.length}`
+        );
+
+        // STEP 2: Process each Period → AdaptationSet to resolve effective DRM
+        const periods = Array.from(manifest.querySelectorAll("Period"));
+        const adaptationSetDrmMap = new Map(); // Track effective DRM per AdaptationSet
+
+        periods.forEach((period, periodIndex) => {
+          const periodId = period.getAttribute("id") || `period_${periodIndex}`;
+
+          // Extract Period-level ContentProtection
+          const periodContentProtections =
+            this.extractContentProtectionElements(period);
+          console.log(
+            `Period ${periodId} ContentProtection: ${periodContentProtections.length}`
+          );
+
+          // Process each AdaptationSet in this Period
+          const adaptationSets = Array.from(
+            period.querySelectorAll("AdaptationSet")
+          );
+          adaptationSets.forEach((adaptationSet, asIndex) => {
+            const contentType =
+              adaptationSet.getAttribute("contentType") || "unknown";
+            const asKey = `${periodId}.AS${asIndex}(${contentType})`;
+
+            // STEP 3: Resolve effective DRM for this AdaptationSet using DASH inheritance
+            const effectiveDrm = this.resolveEffectiveDRM(
+              mpdContentProtections,
+              periodContentProtections,
+              adaptationSet
+            );
+
+            if (effectiveDrm.length > 0) {
+              adaptationSetDrmMap.set(asKey, effectiveDrm);
+              console.log(
+                `${asKey} effective DRM:`,
+                effectiveDrm.map((d) => `${d.schemeIdUri}(${d.value})`)
+              );
+            }
+          });
+        });
+
+        // STEP 4: Semantic deduplication - collapse identical DRM systems
+        const uniqueDrmSystems =
+          this.deduplicateDRMSystems(adaptationSetDrmMap);
+        console.log(
+          "Unique DRM systems after deduplication:",
+          uniqueDrmSystems
+        );
+
+        // STEP 5: Classify and process deduplicated systems
+        uniqueDrmSystems.forEach((drmSystem) => {
+          const { schemeIdUri, value, defaultKID, locations } = drmSystem;
+
+          // Add to effective DRM systems set for comparison
+          const systemKey = `${schemeIdUri}:${value}:${defaultKID || "none"}`;
+          drmInfo.effectiveDrmSystems.add(systemKey);
+          drmInfo.hasDRM = true;
+
+          if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+            // CENC system
+            drmInfo.cencSystems.push({
+              value: value,
+              defaultKID: defaultKID,
+              locations: locations, // Array of where this system is effective
+            });
+          } else if (
+            schemeIdUri.includes("drm") ||
+            schemeIdUri.includes("protection")
+          ) {
+            // Other DRM systems
+            drmInfo.otherSystems.push({
+              schemeIdUri: schemeIdUri,
+              value: value,
+              locations: locations,
+            });
+          }
+        });
+
+        // STEP 6: Generate summary and details
+        this.generateDRMSummaryAndDetails(drmInfo);
+
+        console.log("=== DRM EXTRACTION COMPLETE ===");
+        console.log(
+          `Effective DRM systems: ${drmInfo.effectiveDrmSystems.size}`
+        );
+        console.log(`CENC systems: ${drmInfo.cencSystems.length}`);
+        console.log(`Other systems: ${drmInfo.otherSystems.length}`);
+      } catch (error) {
+        console.error("Failed to extract DRM signaling info:", error);
+        drmInfo.summary = "Extraction failed";
+        drmInfo.details = `Failed to extract DRM info: ${error.message}`;
+      }
+
+      return drmInfo;
+    },
+
+    // Extract ContentProtection elements from a specific element (MPD, Period, AdaptationSet, Representation)
+    extractContentProtectionElements(element) {
+      if (!element) return [];
+
+      return Array.from(
+        element.querySelectorAll(":scope > ContentProtection")
+      ).map((cp) => {
+        const schemeIdUri = cp.getAttribute("schemeIdUri") || "";
+        const value = cp.getAttribute("value") || "";
+        const cencInfo = this.extractCENCInfo(cp);
+
+        return {
+          element: cp,
+          schemeIdUri: schemeIdUri,
+          value: value,
+          defaultKID: cencInfo ? cencInfo.defaultKID : null,
+        };
+      });
+    },
+
+    // DASH inheritance resolution: resolve effective DRM for an AdaptationSet
+    resolveEffectiveDRM(
+      mpdContentProtections,
+      periodContentProtections,
+      adaptationSet
+    ) {
+      const effectiveDrm = [];
+
+      // DASH inheritance order: MPD → Period → AdaptationSet → Representation
+      // Lower levels inherit from higher levels, but can override
+
+      // Start with MPD-level (inherited by all)
+      effectiveDrm.push(...mpdContentProtections);
+
+      // Add Period-level (inherits MPD, adds more)
+      effectiveDrm.push(...periodContentProtections);
+
+      // Add AdaptationSet-level
+      const asContentProtections =
+        this.extractContentProtectionElements(adaptationSet);
+      effectiveDrm.push(...asContentProtections);
+
+      // Add Representation-level (check first representation as sample)
+      const firstRepresentation = adaptationSet.querySelector("Representation");
+      if (firstRepresentation) {
+        const repContentProtections =
+          this.extractContentProtectionElements(firstRepresentation);
+        effectiveDrm.push(...repContentProtections);
+      }
+
+      return effectiveDrm;
+    },
+
+    // Semantic deduplication: collapse multiple declarations of same DRM into single effective system
+    deduplicateDRMSystems(adaptationSetDrmMap) {
+      const systemMap = new Map(); // Key: schemeIdUri:value:defaultKID, Value: system info
+
+      adaptationSetDrmMap.forEach((drmSystems, asKey) => {
+        drmSystems.forEach((drmSystem) => {
+          const { schemeIdUri, value, defaultKID } = drmSystem;
+          const systemKey = `${schemeIdUri}:${value}:${defaultKID || "none"}`;
+
+          if (systemMap.has(systemKey)) {
+            // Add this AdaptationSet to existing system's locations
+            systemMap.get(systemKey).locations.push(asKey);
+          } else {
+            // New unique system
+            systemMap.set(systemKey, {
+              schemeIdUri: schemeIdUri,
+              value: value,
+              defaultKID: defaultKID,
+              locations: [asKey], // Track where this system is effective
+            });
+          }
+        });
+      });
+
+      return Array.from(systemMap.values());
+    },
+
+    // Generate summary and details for DRM info
+    generateDRMSummaryAndDetails(drmInfo) {
+      if (drmInfo.hasDRM) {
+        const summaryParts = [];
+
+        if (drmInfo.cencSystems.length > 0) {
+          const cencSummary = drmInfo.cencSystems
+            .map((c) => {
+              const kidSuffix = c.defaultKID
+                ? `:${c.defaultKID.substring(0, 8)}...`
+                : "";
+              const locationCount = c.locations.length;
+              return `CENC(${c.value}${kidSuffix})×${locationCount}`;
+            })
+            .join(", ");
+          summaryParts.push(cencSummary);
+        }
+
+        if (drmInfo.otherSystems.length > 0) {
+          const otherSummary = drmInfo.otherSystems
+            .map((o) => {
+              const locationCount = o.locations.length;
+              return `${o.schemeIdUri.split(":").pop()}×${locationCount}`;
+            })
+            .join(", ");
+          summaryParts.push(otherSummary);
+        }
+
+        drmInfo.summary = summaryParts.join(", ");
+
+        // Detailed breakdown
+        const detailParts = [];
+
+        drmInfo.cencSystems.forEach((cenc) => {
+          detailParts.push(`CENC System:`);
+          detailParts.push(`  - Value: ${cenc.value}`);
+          detailParts.push(
+            `  - Default KID: ${cenc.defaultKID || "not specified"}`
+          );
+          detailParts.push(`  - Effective on: ${cenc.locations.join(", ")}`);
+        });
+
+        drmInfo.otherSystems.forEach((other) => {
+          detailParts.push(`Other DRM System:`);
+          detailParts.push(`  - Scheme: ${other.schemeIdUri}`);
+          detailParts.push(`  - Value: ${other.value || "not specified"}`);
+          detailParts.push(`  - Effective on: ${other.locations.join(", ")}`);
+        });
+
+        drmInfo.details = detailParts.join("\n");
+      } else {
+        drmInfo.summary = "No DRM";
+        drmInfo.details = "No ContentProtection elements found";
+      }
+    },
+
+    // PRODUCTION-GRADE: Extract CENC information with proper normalization
+    extractCENCInfo(contentProtectionElement) {
+      try {
+        const value = contentProtectionElement.getAttribute("value") || "";
+
+        // Extract default_KID - handle multiple possible attribute names and namespaces
+        let defaultKID = null;
+
+        // Try different possible attribute names (namespace-agnostic)
+        const possibleKIDAttributes = [
+          "cenc:default_KID",
+          "default_KID",
+          "defaultKID",
+          "cenc:defaultKID",
+        ];
+
+        for (const attrName of possibleKIDAttributes) {
+          const kidValue = contentProtectionElement.getAttribute(attrName);
+          if (kidValue) {
+            // PRODUCTION-GRADE: Normalize KID to lowercase (critical for comparison)
+            defaultKID = kidValue.toLowerCase().trim();
+            break;
+          }
+        }
+
+        // Also check for KID in child elements
+        if (!defaultKID) {
+          const kidElements = contentProtectionElement.querySelectorAll("*");
+          for (const elem of kidElements) {
+            if (
+              elem.textContent &&
+              elem.textContent.match(/^[0-9a-f-]{36}$/i)
+            ) {
+              defaultKID = elem.textContent.toLowerCase().trim();
+              break;
+            }
+          }
+        }
+
+        return {
+          value: value,
+          defaultKID: defaultKID,
+        };
+      } catch (error) {
+        console.error("Failed to extract CENC info:", error);
+        return null;
+      }
+    },
+
+    // Get the location context of a ContentProtection element
+    getContentProtectionLocation(element) {
+      const parent = element.parentElement;
+      if (!parent) return "unknown";
+
+      const tagName = parent.tagName;
+      if (tagName === "MPD") return "MPD-level";
+      if (tagName === "Period") return "Period-level";
+      if (tagName === "AdaptationSet") return "AdaptationSet-level";
+      if (tagName === "Representation") return "Representation-level";
+
+      return `${tagName}-level`;
+    },
+
+    // PRODUCTION-GRADE: Semantic comparison of DRM signaling with set-based comparison
+    compareDRMSignaling(previousDrmInfo, currentDrmInfo) {
+      const comparison = {
+        summary: "",
+        status: "OK",
+        statusClass: "status-ok",
+        changed: false,
+        details: "",
+      };
+
+      const changes = [];
+      const details = [];
+
+      try {
+        // Check for DRM presence changes
+        if (!previousDrmInfo.hasDRM && currentDrmInfo.hasDRM) {
+          comparison.changed = true;
+          comparison.status = "DRM_ADDED";
+          comparison.statusClass = "status-warning";
+          changes.push("DRM protection added");
+          details.push(`DRM Added: ${currentDrmInfo.summary}`);
+        } else if (previousDrmInfo.hasDRM && !currentDrmInfo.hasDRM) {
+          comparison.changed = true;
+          comparison.status = "DRM_REMOVED";
+          comparison.statusClass = "status-error-red";
+          changes.push("DRM protection removed");
+          details.push(
+            "CRITICAL: DRM protection removed - stream now unprotected"
+          );
+        } else if (!previousDrmInfo.hasDRM && !currentDrmInfo.hasDRM) {
+          comparison.summary = "No DRM (unchanged)";
+          details.push("No DRM protection in either manifest");
+          return comparison;
+        }
+
+        // PRODUCTION-GRADE: Set-based comparison of effective DRM systems
+        const prevSystems = previousDrmInfo.effectiveDrmSystems || new Set();
+        const currSystems = currentDrmInfo.effectiveDrmSystems || new Set();
+
+        // Find added and removed systems
+        const addedSystems = new Set(
+          [...currSystems].filter((s) => !prevSystems.has(s))
+        );
+        const removedSystems = new Set(
+          [...prevSystems].filter((s) => !currSystems.has(s))
+        );
+
+        if (addedSystems.size > 0 || removedSystems.size > 0) {
+          comparison.changed = true;
+
+          // Process added systems
+          if (addedSystems.size > 0) {
+            changes.push(`${addedSystems.size} DRM system(s) added`);
+            addedSystems.forEach((system) => {
+              const [schemeIdUri, value, defaultKID] = system.split(":");
+              if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+                details.push(
+                  `Added CENC: value=${value}, KID=${
+                    defaultKID === "none" ? "none" : defaultKID
+                  }`
+                );
+                if (defaultKID !== "none") {
+                  comparison.status = "KEY_ROTATION";
+                  comparison.statusClass = "status-error-red";
+                }
+              } else {
+                details.push(`Added DRM: ${schemeIdUri}, value=${value}`);
+              }
+            });
+          }
+
+          // Process removed systems
+          if (removedSystems.size > 0) {
+            changes.push(`${removedSystems.size} DRM system(s) removed`);
+            removedSystems.forEach((system) => {
+              const [schemeIdUri, value, defaultKID] = system.split(":");
+              if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+                details.push(
+                  `Removed CENC: value=${value}, KID=${
+                    defaultKID === "none" ? "none" : defaultKID
+                  }`
+                );
+                comparison.status = "DRM_REMOVED";
+                comparison.statusClass = "status-error-red";
+              } else {
+                details.push(`Removed DRM: ${schemeIdUri}, value=${value}`);
+              }
+            });
+          }
+
+          // Determine overall severity
+          if (removedSystems.size > 0) {
+            comparison.status = "DRM_REMOVED";
+            comparison.statusClass = "status-error-red";
+          } else if (addedSystems.size > 0) {
+            // Check if any added system involves key rotation
+            const hasKeyRotation = Array.from(addedSystems).some((system) => {
+              const [schemeIdUri, , defaultKID] = system.split(":");
+              return (
+                schemeIdUri === "urn:mpeg:dash:mp4protection:2011" &&
+                defaultKID !== "none"
+              );
+            });
+
+            if (hasKeyRotation) {
+              comparison.status = "KEY_ROTATION";
+              comparison.statusClass = "status-error-red";
+            } else {
+              comparison.status = "DRM_CHANGED";
+              comparison.statusClass = "status-warning";
+            }
+          }
+        }
+
+        // Generate final summary
+        if (comparison.changed) {
+          comparison.summary = changes.join(", ");
+        } else {
+          comparison.summary = `Unchanged: ${currentDrmInfo.summary}`;
+        }
+
+        comparison.details = details.join("\n");
+      } catch (error) {
+        console.error("DRM signaling comparison failed:", error);
+        comparison.summary = "Comparison failed";
+        comparison.status = "ERROR";
+        comparison.statusClass = "status-error";
+        comparison.details = `Comparison failed: ${error.message}`;
+      }
+
+      return comparison;
+    },
+
+    // CORRECT: Compare period start times using segment-derived timing
+    comparePeriodStartTimes(periods) {
+      const issues = [];
+      let consistent = true;
+
+      try {
+        if (periods.length <= 1) {
+          return { consistent: true, issues: [] };
+        }
+
+        // CORRECT: Use segment-derived period boundaries, not Period.start + Period.duration
+        const periodBoundaries = periods.map((period, index) => {
+          const periodId =
+            period.id?.parsed ||
+            period.id?.raw ||
+            period.id ||
+            `period_${index}`;
+          const declaredStart = period.start?.parsed || 0;
+          const declaredDuration = period.duration?.parsed;
+
+          // Derive actual timing from segments
+          const segmentStart = this.getFirstSegmentPresentationTime(period);
+          const segmentDuration =
+            this.estimatePeriodDurationFromSegments(period);
+
+          return {
+            periodId,
+            declaredStart,
+            declaredDuration,
+            segmentStart: segmentStart !== null ? segmentStart : declaredStart,
+            segmentDuration:
+              segmentDuration > 0 ? segmentDuration : declaredDuration || 0,
+            segmentEnd:
+              (segmentStart !== null ? segmentStart : declaredStart) +
+              (segmentDuration > 0 ? segmentDuration : declaredDuration || 0),
+          };
+        });
+
+        // Validate period sequence using segment-derived boundaries
+        for (let i = 1; i < periodBoundaries.length; i++) {
+          const prevPeriod = periodBoundaries[i - 1];
+          const currPeriod = periodBoundaries[i];
+
+          const expectedStart = prevPeriod.segmentEnd;
+          const actualStart = currPeriod.segmentStart;
+
+          const tolerance = 0.001; // 1ms tolerance
+          const gap = Math.abs(actualStart - expectedStart);
+
+          if (gap > tolerance) {
+            consistent = false;
+            issues.push(
+              `Period ${
+                currPeriod.periodId
+              }: Segment-derived start time ${actualStart.toFixed(
+                3
+              )}s doesn't follow previous period end ${expectedStart.toFixed(
+                3
+              )}s (gap: ${gap.toFixed(3)}s)`
+            );
+          }
+
+          // Also check for overlaps
+          if (actualStart < prevPeriod.segmentEnd - tolerance) {
+            consistent = false;
+            issues.push(
+              `Period overlap: ${
+                currPeriod.periodId
+              } starts at ${actualStart.toFixed(3)}s but ${
+                prevPeriod.periodId
+              } ends at ${prevPeriod.segmentEnd.toFixed(3)}s`
+            );
+          }
+
+          // Validate declared vs segment-derived timing consistency
+          if (
+            currPeriod.declaredStart !== undefined &&
+            Math.abs(currPeriod.declaredStart - currPeriod.segmentStart) >
+              tolerance
+          ) {
+            // This is informational, not an error
+            console.log(
+              `Period ${
+                currPeriod.periodId
+              }: Declared start (${currPeriod.declaredStart.toFixed(
+                3
+              )}s) differs from segment-derived start (${currPeriod.segmentStart.toFixed(
+                3
+              )}s)`
+            );
+          }
+        }
+      } catch (error) {
+        console.error("Period start time comparison failed:", error);
+        consistent = false;
+        issues.push("Period start time comparison failed");
+      }
+
+      return { consistent, issues };
+    },
+
+    // CORRECT: Validate segments align in time across profiles, not identical structure
+    validateSegmentProfileEquivalence(periods) {
+      const issues = [];
+      let equivalent = true;
+
+      try {
+        periods.forEach((period, periodIndex) => {
+          const periodId =
+            period.id?.parsed ||
+            period.id?.raw ||
+            period.id ||
+            `period_${periodIndex}`;
+          const adaptationSets = this.ensureArray(period.AdaptationSet);
+
+          adaptationSets.forEach((as, asIndex) => {
+            const contentType =
+              as.contentType?.parsed ||
+              this.inferContentType(as.mimeType?.parsed);
+            const representations = this.ensureArray(as.Representation);
+
+            if (representations.length > 1) {
+              // CORRECT: Check that segments align in presentation time across representations
+              // NOT that they are structurally identical
+
+              const representationTimelines = representations.map(
+                (rep, repIndex) => {
+                  const timeline = this.expandTimelineWithPTO(rep);
+                  return {
+                    repIndex,
+                    bandwidth: rep.bandwidth?.parsed || 0,
+                    segments: timeline.segments.map((seg) => ({
+                      start: seg.start,
+                      duration: seg.duration,
+                      end: seg.start + seg.duration,
+                    })),
+                  };
+                }
+              );
+
+              // Check temporal alignment between representations
+              const referenceTimeline = representationTimelines[0];
+
+              for (let i = 1; i < representationTimelines.length; i++) {
+                const currentTimeline = representationTimelines[i];
+
+                // CORRECT: Segments should align in time, but may have different counts due to different encoding
+                const alignmentCheck = this.checkTemporalAlignment(
+                  referenceTimeline.segments,
+                  currentTimeline.segments,
+                  periodId,
+                  asIndex,
+                  referenceTimeline.repIndex,
+                  currentTimeline.repIndex,
+                  contentType
+                );
+
+                if (!alignmentCheck.aligned) {
+                  equivalent = false;
+                  issues.push(...alignmentCheck.issues);
+                }
+              }
+            }
+          });
+        });
+      } catch (error) {
+        console.error("Segment profile equivalence validation failed:", error);
+        equivalent = false;
+        issues.push("Segment profile equivalence validation failed");
+      }
+
+      return { equivalent, issues };
+    },
+
+    // Check temporal alignment between representation timelines
+    checkTemporalAlignment(
+      refSegments,
+      curSegments,
+      periodId,
+      asIndex,
+      refRepIndex,
+      curRepIndex,
+      contentType
+    ) {
+      const issues = [];
+      let aligned = true;
+
+      try {
+        // CORRECT: Check that segment boundaries align, allowing for different segment counts
+        const tolerance = contentType === "audio" ? 0.03 : 0.04; // Production tolerances
+
+        // Find overlapping time ranges
+        const refTimeRange = {
+          start: refSegments.length > 0 ? refSegments[0].start : 0,
+          end:
+            refSegments.length > 0
+              ? refSegments[refSegments.length - 1].end
+              : 0,
+        };
+
+        const curTimeRange = {
+          start: curSegments.length > 0 ? curSegments[0].start : 0,
+          end:
+            curSegments.length > 0
+              ? curSegments[curSegments.length - 1].end
+              : 0,
+        };
+
+        // Check overall time range alignment
+        if (Math.abs(refTimeRange.start - curTimeRange.start) > tolerance) {
+          aligned = false;
+          issues.push(
+            `Period ${periodId} AS${asIndex}: Rep${curRepIndex} starts at ${curTimeRange.start.toFixed(
+              3
+            )}s vs Rep${refRepIndex} at ${refTimeRange.start.toFixed(
+              3
+            )}s (diff: ${Math.abs(
+              refTimeRange.start - curTimeRange.start
+            ).toFixed(3)}s)`
+          );
+        }
+
+        if (Math.abs(refTimeRange.end - curTimeRange.end) > tolerance) {
+          aligned = false;
+          issues.push(
+            `Period ${periodId} AS${asIndex}: Rep${curRepIndex} ends at ${curTimeRange.end.toFixed(
+              3
+            )}s vs Rep${refRepIndex} at ${refTimeRange.end.toFixed(
+              3
+            )}s (diff: ${Math.abs(refTimeRange.end - curTimeRange.end).toFixed(
+              3
+            )}s)`
+          );
+        }
+
+        // Check for major segment boundary misalignments
+        // Sample a few key segment boundaries for alignment check
+        const samplePoints = Math.min(
+          5,
+          Math.min(refSegments.length, curSegments.length)
+        );
+
+        for (let i = 0; i < samplePoints; i++) {
+          const refSeg =
+            refSegments[Math.floor((i * refSegments.length) / samplePoints)];
+
+          // Find closest segment in current timeline
+          const closestCurSeg = curSegments.reduce((closest, seg) => {
+            const refDist = Math.abs(seg.start - refSeg.start);
+            const closestDist = Math.abs(closest.start - refSeg.start);
+            return refDist < closestDist ? seg : closest;
+          });
+
+          const startDiff = Math.abs(refSeg.start - closestCurSeg.start);
+          if (startDiff > tolerance) {
+            aligned = false;
+            issues.push(
+              `Period ${periodId} AS${asIndex}: Segment boundary misalignment at ~${refSeg.start.toFixed(
+                3
+              )}s (${startDiff.toFixed(
+                3
+              )}s difference exceeds ${contentType} tolerance)`
+            );
+            break; // Only report first major misalignment
+          }
+        }
+      } catch (error) {
+        console.warn("Temporal alignment check failed:", error);
+        aligned = false;
+        issues.push(
+          `Period ${periodId} AS${asIndex}: Temporal alignment check failed`
+        );
+      }
+
+      return { aligned, issues };
+    },
+
+    // CORRECT: Validate period consistency using stable identity, not Period.id
+    async validatePeriodIdConsistency(periods) {
+      const changes = [];
+      let consistent = true;
+
+      try {
+        if (!this.previousManifest) {
+          return {
+            consistent: true,
+            changes: ["No previous MPD to compare against"],
+          };
+        }
+
+        const previousPeriods = await this.extractPreviousPeriods();
+
+        // CORRECT: Use stable period identities instead of unreliable Period.id
+        const currentIdentities = this.extractStablePeriodIdentities(periods);
+        const previousIdentities =
+          this.extractStablePeriodIdentities(previousPeriods);
+
+        console.log("=== PERIOD IDENTITY CONSISTENCY CHECK ===");
+        console.log("Current period identities:", currentIdentities);
+        console.log("Previous period identities:", previousIdentities);
+
+        // Find added periods (exist in current but not in previous)
+        const addedPeriods = currentIdentities.filter(
+          (current) =>
+            !previousIdentities.some((previous) =>
+              this.periodsMatch(current, previous)
+            )
+        );
+
+        // Find removed periods (exist in previous but not in current)
+        const removedPeriods = previousIdentities.filter(
+          (previous) =>
+            !currentIdentities.some((current) =>
+              this.periodsMatch(current, previous)
+            )
+        );
+
+        // Find periods that changed timing (same original ID but different timing)
+        const timingChanges = [];
+        currentIdentities.forEach((current) => {
+          const matchingPrevious = previousIdentities.find(
+            (previous) =>
+              current.originalId === previous.originalId &&
+              current.originalId !== `period_${current.start}` // Exclude fallback IDs
+          );
+
+          if (
+            matchingPrevious &&
+            !this.periodsMatch(current, matchingPrevious)
+          ) {
+            timingChanges.push({
+              id: current.originalId,
+              currentTiming: current.displayId,
+              previousTiming: matchingPrevious.displayId,
+            });
+          }
+        });
+
+        // Report changes
+        if (addedPeriods.length > 0) {
+          consistent = false;
+          changes.push(
+            `Added periods: ${addedPeriods
+              .map((p) => `${p.originalId} (${p.displayId})`)
+              .join(", ")}`
+          );
+        }
+
+        if (removedPeriods.length > 0) {
+          consistent = false;
+          changes.push(
+            `Removed periods: ${removedPeriods
+              .map((p) => `${p.originalId} (${p.displayId})`)
+              .join(", ")}`
+          );
+        }
+
+        if (timingChanges.length > 0) {
+          consistent = false;
+          changes.push(
+            `Timing changes: ${timingChanges
+              .map(
+                (tc) => `${tc.id}: ${tc.previousTiming} → ${tc.currentTiming}`
+              )
+              .join(", ")}`
+          );
+        }
+
+        // Check for period reordering
+        const stableCurrentPeriods = currentIdentities.filter(
+          (p) => p.method !== "index_fallback"
+        );
+        const stablePreviousPeriods = previousIdentities.filter(
+          (p) => p.method !== "index_fallback"
+        );
+
+        if (
+          stableCurrentPeriods.length > 0 &&
+          stablePreviousPeriods.length > 0
+        ) {
+          const currentOrder = stableCurrentPeriods
+            .map((p) => p.originalId)
+            .join("→");
+          const previousOrder = stablePreviousPeriods
+            .map((p) => p.originalId)
+            .join("→");
+
+          if (
+            currentOrder !== previousOrder &&
+            stableCurrentPeriods.length === stablePreviousPeriods.length
+          ) {
+            // Only flag reordering if same periods exist but in different order
+            const currentIds = new Set(
+              stableCurrentPeriods.map((p) => p.originalId)
+            );
+            const previousIds = new Set(
+              stablePreviousPeriods.map((p) => p.originalId)
+            );
+
+            if (
+              currentIds.size === previousIds.size &&
+              [...currentIds].every((id) => previousIds.has(id))
+            ) {
+              consistent = false;
+              changes.push(
+                `Period reordering detected: ${previousOrder} → ${currentOrder}`
+              );
+            }
+          }
+        }
+
+        if (
+          consistent &&
+          addedPeriods.length === 0 &&
+          removedPeriods.length === 0 &&
+          timingChanges.length === 0
+        ) {
+          changes.push("All periods maintain consistent identity");
+        }
+
+        console.log("Period identity consistency result:", {
+          consistent,
+          changes,
+        });
+        console.log("=== END PERIOD IDENTITY CONSISTENCY CHECK ===");
+      } catch (error) {
+        console.error("Period identity consistency validation failed:", error);
+        consistent = false;
+        changes.push("Period identity consistency validation failed");
+      }
+
+      return { consistent, changes };
+    },
+
+    // Check if MPD duration is consistent with previous entries
+    isMpdDurationConsistent(currentDuration, historyIndex) {
+      if (
+        currentDuration === null ||
+        historyIndex >= this.comparisonHistory.length - 1
+      ) {
+        return true; // First entry or no duration to compare
+      }
+
+      // Get the previous few entries to establish a pattern
+      const previousEntries = this.comparisonHistory.slice(
+        historyIndex + 1,
+        historyIndex + 4
+      );
+      const previousDurations = previousEntries
+        .map((entry) => entry.mpdDuration)
+        .filter((duration) => duration !== null);
+
+      if (previousDurations.length === 0) return true;
+
+      // Check if current duration matches the established pattern
+      const tolerance = 1; // 1 second tolerance
+      return previousDurations.some(
+        (prevDuration) => Math.abs(currentDuration - prevDuration) <= tolerance
+      );
+    },
   },
 
   beforeUnmount() {
@@ -2799,11 +6685,36 @@ export default {
     if (this.player) {
       this.stopStream();
     }
+    // Clean up global data objects
+    if (window.periodExpandData) {
+      delete window.periodExpandData;
+    }
+    if (window.startTimeExpandData) {
+      delete window.startTimeExpandData;
+    }
   },
 
   mounted() {
     // Auto-refetch is enabled by default, but only starts when user loads a manifest
     // This ensures the user experience is smooth with automatic updates
+    console.log("=== COMPONENT MOUNTED ===");
+    console.log("Component ID:", this.$el?.id || "no-id");
+    console.log("Component mounted at:", new Date().toISOString());
+    console.log(
+      "Component mounted successfully with Vue-native expand/collapse functionality"
+    );
+  },
+
+  beforeDestroy() {
+    // Clean up global reference
+    if (window.vueComponent === this) {
+      delete window.vueComponent;
+    }
+
+    // Clean up any timers
+    if (this.refetchTimer) {
+      clearTimeout(this.refetchTimer);
+    }
   },
 };
 </script>
@@ -2814,6 +6725,8 @@ export default {
   margin: 0;
   padding: 20px;
   width: 100%;
+  overflow-x: hidden; /* Prevent horizontal overflow of the main container */
+  box-sizing: border-box;
 }
 
 /* URL Input Section */
@@ -2868,11 +6781,34 @@ export default {
 /* Refetch Settings */
 .refetch-settings {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 12px;
   padding: 16px;
   background: #f8f9fa;
   border-radius: 8px;
+}
+
+.dash-compliant-info {
+  background: #e3f2fd;
+  padding: 12px;
+  border-radius: 6px;
+  border-left: 4px solid #2196f3;
+  font-size: 14px;
+  color: #1565c0;
+}
+
+.dash-compliant-info code {
+  background: #bbdefb;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+}
+
+.refetch-settings .controls-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .refetch-settings label {
@@ -2911,6 +6847,27 @@ export default {
 
 .toggle-button:hover {
   background: #28a745;
+  color: white;
+}
+
+.pause-button {
+  padding: 8px 16px;
+  border: 2px solid #ffc107;
+  background: white;
+  color: #ffc107;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.pause-button.active {
+  background: #ffc107;
+  color: white;
+}
+
+.pause-button:hover {
+  background: #ffc107;
   color: white;
 }
 
@@ -2953,6 +6910,44 @@ export default {
   margin-bottom: 20px;
   flex-wrap: wrap;
   gap: 16px;
+}
+
+.table-controls {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.view-toggle {
+  display: flex;
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 4px;
+  border: 1px solid #dee2e6;
+}
+
+.view-toggle-button {
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6c757d;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+
+.view-toggle-button.active {
+  background: #007bff;
+  color: white;
+  box-shadow: 0 2px 4px rgba(0, 123, 255, 0.3);
+}
+
+.view-toggle-button:hover:not(.active) {
+  background: #e9ecef;
+  color: #495057;
 }
 
 .update-info {
@@ -3020,26 +7015,86 @@ export default {
   border-color: #c3e6cb;
 }
 
+.auto-refetch-indicator.paused {
+  background: #fff3cd;
+  color: #856404;
+  border-color: #ffeaa7;
+}
+
 .table-wrapper {
-  overflow: auto;
+  overflow-x: auto; /* Enable horizontal scrolling */
+  overflow-y: auto; /* Enable vertical scrolling */
   border-radius: 8px;
   border: 1px solid #e9ecef;
-  width: 100%;
+  width: 100%; /* Stay within viewport width */
+  max-width: 100vw; /* Never exceed viewport width */
   max-height: 70vh; /* Limit height to enable vertical scrolling */
   position: relative;
+  box-sizing: border-box;
+  /* Better scrollbar styling for webkit browsers */
+  scrollbar-width: thin;
+  scrollbar-color: #007bff #f1f3f4;
+}
+
+/* Custom scrollbar for webkit browsers */
+.table-wrapper::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.table-wrapper::-webkit-scrollbar-track {
+  background: #f1f3f4;
+  border-radius: 4px;
+}
+
+.table-wrapper::-webkit-scrollbar-thumb {
+  background: #007bff;
+  border-radius: 4px;
+}
+
+.table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: #0056b3;
+}
+
+/* Scroll hint styling */
+.scroll-hint {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.scroll-indicator {
+  font-size: 12px;
+  color: #6c757d;
+  font-style: italic;
+  background: #f8f9fa;
+  padding: 4px 12px;
+  border-radius: 12px;
+  border: 1px solid #dee2e6;
+  display: inline-block;
+}
+
+/* Pending count indicator */
+.pending-count {
+  font-size: 10px;
+  background: #ffc107;
+  color: #212529;
+  padding: 2px 6px;
+  border-radius: 8px;
+  margin-left: 4px;
+  font-weight: bold;
 }
 
 .comparison-table {
-  width: 100%;
-  min-width: 100%; /* Use full available width */
+  width: 5000px; /* Increased width for 23 columns (was 4800px for 22 columns) */
+  min-width: 5000px; /* Ensure table maintains large width */
   border-collapse: collapse;
   font-size: 13px;
-  table-layout: auto; /* Let table expand to full width */
+  table-layout: fixed; /* Fixed layout for equal column widths */
 }
 
 .comparison-table th {
   background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-  padding: 16px 12px;
+  padding: 24px 20px; /* Even more padding for very spacious columns */
   text-align: left;
   font-weight: 600;
   color: #495057;
@@ -3047,8 +7102,7 @@ export default {
   border-right: 1px solid #dee2e6;
   white-space: normal;
   word-wrap: break-word;
-  width: auto; /* Allow headers to expand based on content */
-  min-width: calc(100% / 19); /* Minimum width distribution (19 columns now) */
+  width: calc(5000px / 23); /* Equal width for all 23 columns (~217px each) */
   font-size: 12px;
   line-height: 1.4;
   vertical-align: top;
@@ -3059,7 +7113,7 @@ export default {
 }
 
 .comparison-table td {
-  padding: 16px 12px;
+  padding: 24px 20px; /* Even more padding for very spacious columns */
   border-bottom: 1px solid #f1f3f4;
   border-right: 1px solid #f1f3f4;
   vertical-align: top;
@@ -3068,8 +7122,7 @@ export default {
   word-wrap: break-word;
   font-size: 13px;
   line-height: 1.5;
-  width: auto; /* Allow cells to expand based on content */
-  min-width: calc(100% / 19); /* Minimum width distribution (19 columns now) */
+  width: calc(5000px / 23); /* Equal width for all 23 columns (~217px each) */
   max-height: none;
   overflow: visible;
 }
@@ -3077,6 +7130,357 @@ export default {
 .comparison-table td.metric-value {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
+
+/* Detailed content styling */
+.comparison-table td.detailed-content {
+  font-family: "Courier New", Consolas, monospace;
+  border-left: 3px solid #007bff;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  padding: 12px;
+}
+
+/* Row highlighting - Latest row (green) */
+.latest-row td {
+  background: rgba(40, 167, 69, 0.1) !important;
+  border-left: 3px solid #28a745;
+}
+
+.latest-row:hover td {
+  background: rgba(40, 167, 69, 0.15) !important;
+}
+
+/* Row highlighting - Changed row (red) */
+.changed-row td {
+  background: rgba(220, 53, 69, 0.1) !important;
+  border-left: 3px solid #dc3545;
+}
+
+.changed-row:hover td {
+  background: rgba(220, 53, 69, 0.15) !important;
+}
+
+/* Latest row takes precedence over changed row */
+.latest-row.changed-row td {
+  background: rgba(40, 167, 69, 0.1) !important;
+  border-left: 3px solid #28a745;
+}
+
+.latest-row.changed-row:hover td {
+  background: rgba(40, 167, 69, 0.15) !important;
+}
+
+/* Row highlighting takes precedence over detailed content background */
+.latest-row td.detailed-content {
+  background: rgba(40, 167, 69, 0.05) !important;
+}
+
+.latest-row:hover td.detailed-content {
+  background: rgba(40, 167, 69, 0.1) !important;
+}
+
+.changed-row td.detailed-content {
+  background: rgba(220, 53, 69, 0.08) !important;
+}
+
+.changed-row:hover td.detailed-content {
+  background: rgba(220, 53, 69, 0.12) !important;
+}
+
+/* Latest row takes precedence over changed row in detailed view */
+.latest-row.changed-row td.detailed-content {
+  background: rgba(40, 167, 69, 0.05) !important;
+}
+
+.latest-row.changed-row:hover td.detailed-content {
+  background: rgba(40, 167, 69, 0.1) !important;
+}
+
+/* Status-specific styling */
+.status-error-red {
+  background: rgba(220, 53, 69, 0.15) !important;
+  color: #721c24 !important;
+  border-left: 3px solid #dc3545 !important;
+  font-weight: 600;
+}
+
+.status-critical-error {
+  background: rgba(220, 53, 69, 0.2) !important;
+  color: #721c24 !important;
+  border-left: 4px solid #dc3545 !important;
+  font-weight: 700;
+  animation: pulse-red 2s infinite;
+}
+
+@keyframes pulse-red {
+  0% {
+    background: rgba(220, 53, 69, 0.2);
+  }
+  50% {
+    background: rgba(220, 53, 69, 0.3);
+  }
+  100% {
+    background: rgba(220, 53, 69, 0.2);
+  }
+}
+
+.status-warning {
+  background: rgba(255, 193, 7, 0.15) !important;
+  color: #856404 !important;
+  border-left: 3px solid #ffc107 !important;
+}
+
+.status-protected {
+  background: rgba(40, 167, 69, 0.15) !important;
+  color: #155724 !important;
+  border-left: 3px solid #28a745 !important;
+}
+
+.status-unprotected {
+  background: rgba(255, 193, 7, 0.15) !important;
+  color: #856404 !important;
+  border-left: 3px solid #ffc107 !important;
+}
+
+.status-drm-added {
+  background: rgba(255, 193, 7, 0.15) !important;
+  color: #856404 !important;
+  border-left: 3px solid #ffc107 !important;
+}
+
+.status-drm-removed {
+  background: rgba(220, 53, 69, 0.2) !important;
+  color: #721c24 !important;
+  border-left: 4px solid #dc3545 !important;
+  font-weight: 700;
+  animation: pulse-red 2s infinite;
+}
+
+.status-key-rotation {
+  background: rgba(220, 53, 69, 0.2) !important;
+  color: #721c24 !important;
+  border-left: 4px solid #dc3545 !important;
+  font-weight: 700;
+  animation: pulse-red 2s infinite;
+}
+
+.status-drm-changed {
+  background: rgba(255, 193, 7, 0.15) !important;
+  color: #856404 !important;
+  border-left: 3px solid #ffc107 !important;
+}
+
+.status-profile-mismatch {
+  background: rgba(220, 53, 69, 0.15) !important;
+  color: #721c24 !important;
+  border-left: 3px solid #dc3545 !important;
+}
+
+.status-changed {
+  background: rgba(255, 193, 7, 0.15) !important;
+  color: #856404 !important;
+  border-left: 3px solid #ffc107 !important;
+}
+
+/* Default detailed content background for non-highlighted rows */
+.comparison-table td.detailed-content {
+  background: #f8f9fa;
+}
+
+/* Combined periods column styling */
+.combined-periods-cell {
+  min-width: 200px;
+  max-width: 400px;
+}
+
+.normal-periods-view {
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.detailed-periods-view {
+  font-family: "Courier New", Consolas, monospace;
+  font-size: 11px;
+}
+
+/* Removed duplicate period-item CSS - using the one below */
+
+.expand-btn {
+  background: linear-gradient(135deg, #007bff, #0056b3);
+  border: none;
+  cursor: pointer;
+  padding: 0; /* No padding for icon-only buttons */
+  margin-left: 6px; /* Smaller margin */
+  border-radius: 3px; /* Smaller border radius */
+  font-size: 12px; /* Icon size */
+  color: white;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(0, 123, 255, 0.3);
+  min-width: 24px; /* Small square button */
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.expand-btn:hover {
+  background: linear-gradient(135deg, #0056b3, #004085);
+  box-shadow: 0 4px 8px rgba(0, 123, 255, 0.4);
+  transform: translateY(-1px);
+}
+
+.expand-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0, 123, 255, 0.3);
+}
+
+.expand-btn.expanded {
+  background: linear-gradient(135deg, #28a745, #1e7e34);
+  box-shadow: 0 2px 4px rgba(40, 167, 69, 0.3);
+}
+
+.expand-btn.expanded:hover {
+  background: linear-gradient(135deg, #1e7e34, #155724);
+  box-shadow: 0 4px 8px rgba(40, 167, 69, 0.4);
+}
+
+/* Expanded Details Content Styling */
+.expanded-details-header {
+  background: #e8f5e8;
+  border: 1px solid #28a745;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  color: #155724;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.expanded-details-header strong {
+  color: #0d4f1a;
+}
+
+.expanded-details-content {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+  color: #495057;
+  word-break: break-all;
+  white-space: pre-wrap;
+  width: 100%;
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+/* Removed duplicate Period and Start Time Item Styling - using updated version below */
+
+/* Period and Start Time Item Styling - Updated for larger columns */
+.period-item,
+.start-time-item {
+  display: flex !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  margin-bottom: 6px;
+  padding: 10px 12px; /* Increased padding */
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  background: #f8f9fa;
+  min-height: 40px;
+  flex-wrap: nowrap !important; /* Prevent wrapping */
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.period-item.duplicate-period-id {
+  background: #ffe6e6;
+  border-color: #ff9999;
+}
+
+.period-content,
+.start-time-content {
+  flex: 1 1 auto !important;
+  margin-right: 6px; /* Smaller margin for smaller button */
+  min-width: 0 !important; /* Allow content to shrink */
+  max-width: calc(
+    100% - 35px
+  ) !important; /* Reserve space for small icon button (24px + margin) */
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  font-size: 12px; /* Slightly larger font */
+  line-height: 1.4;
+  white-space: normal;
+  display: block; /* Ensure proper block layout for content */
+}
+
+/* When content is expanded, ensure it doesn't break the flex layout */
+.period-content .expanded-details-header,
+.period-content .expanded-details-content,
+.start-time-content .expanded-details-header,
+.start-time-content .expanded-details-content {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Ensure expand buttons don't shrink - Updated for icon-only buttons (much smaller) */
+.period-item .expand-btn,
+.start-time-item .expand-btn {
+  flex-shrink: 0 !important;
+  flex-grow: 0 !important;
+  min-width: 24px !important; /* Much smaller for icon-only */
+  max-width: 24px !important; /* Fixed small width */
+  height: 24px; /* Square button */
+  font-size: 12px; /* Icon size */
+  padding: 0; /* No padding needed for icons */
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px; /* Smaller border radius */
+}
+
+.period-category {
+  margin: 8px 0 4px 0;
+  font-weight: bold;
+  color: #495057;
+  border-bottom: 1px solid #dee2e6;
+  padding-bottom: 2px;
+}
+
+.no-periods {
+  font-style: italic;
+  color: #6c757d;
+  padding: 4px 8px;
+  font-size: 10px;
+}
+
+/* Start Time Correct column styling */
+.start-time-cell {
+  min-width: 200px;
+  max-width: 400px;
+}
+
+.normal-start-time-view {
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.detailed-start-time-view {
+  font-family: "Courier New", Consolas, monospace;
+  font-size: 11px;
+}
+
+/* Removed old start-time-item CSS - using updated version above */
 
 .comparison-table tr:hover {
   background: rgba(248, 249, 250, 0.8);
@@ -3130,6 +7534,39 @@ export default {
   color: #495057;
   background: rgba(248, 249, 250, 0.8);
   font-size: 12px;
+  position: relative;
+}
+
+.timestamp-cell.duration-inconsistent {
+  background: rgba(220, 53, 69, 0.1) !important;
+  border-left: 4px solid #dc3545;
+  color: #721c24;
+}
+
+.timestamp-cell.duration-inconsistent:hover {
+  background: rgba(220, 53, 69, 0.15) !important;
+}
+
+.mpd-duration {
+  display: block;
+  font-size: 10px;
+  color: #6c757d;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.duration-inconsistent .mpd-duration {
+  color: #dc3545;
+  font-weight: 600;
+}
+
+.mpd-duration-missing {
+  display: block;
+  font-size: 10px;
+  color: #ffc107;
+  font-weight: 500;
+  margin-top: 2px;
+  font-style: italic;
 }
 
 /* Status classes */
@@ -3259,6 +7696,11 @@ export default {
     padding: 12px 8px;
     font-size: 11px;
   }
+
+  /* Hide scroll hint on smaller screens */
+  .scroll-hint {
+    display: none;
+  }
 }
 
 @media (max-width: 480px) {
@@ -3274,6 +7716,28 @@ export default {
   .comparison-table td {
     padding: 8px 6px;
     font-size: 10px;
+  }
+
+  /* Responsive detailed view */
+  .period-item,
+  .start-time-item {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px;
+  }
+
+  .period-content,
+  .start-time-content {
+    margin-right: 0;
+    margin-bottom: 6px;
+  }
+
+  .period-item .expand-btn,
+  .start-time-item .expand-btn {
+    min-width: 20px; /* Even smaller on mobile */
+    height: 20px;
+    font-size: 10px;
+    align-self: flex-end;
   }
 }
 

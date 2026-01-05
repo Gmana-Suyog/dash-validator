@@ -14,6 +14,12 @@
       >
         Single Comparison
       </button>
+      <button
+        @click="activeTab = 'local'"
+        :class="['tab-button', { active: activeTab === 'local' }]"
+      >
+        Local File Manager
+      </button>
     </div>
 
     <!-- Tab Content -->
@@ -27,6 +33,11 @@
       <div v-show="activeTab === 'single'" class="tab-panel">
         <SingleComparison />
       </div>
+
+      <!-- Local File Manager Tab -->
+      <div v-show="activeTab === 'local'" class="tab-panel">
+        <LocalFileManager />
+      </div>
     </div>
   </div>
 </template>
@@ -34,12 +45,14 @@
 <script>
 import Dash_play from "./components/Dash_play.vue";
 import SingleComparison from "./components/SingleComparison.vue";
+import LocalFileManager from "./components/LocalFileManager.vue";
 
 export default {
   name: "App",
   components: {
     Dash_play,
     SingleComparison,
+    LocalFileManager,
   },
   data() {
     return {

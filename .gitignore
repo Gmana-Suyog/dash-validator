@@ -2,6 +2,7 @@
 node_modules
 /dist
 
+mpds/
 
 # local env files
 .env.local
