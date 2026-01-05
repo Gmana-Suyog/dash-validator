@@ -74,6 +74,52 @@
                 </button>
               </template>
             </div>
+
+            <!-- Time Range Filter -->
+            <div v-if="monitoringStatus.isActive" class="time-range-filter">
+              <h6>📅 Time Range Filter (for ZIP download)</h6>
+              <div class="time-inputs">
+                <div class="time-input-group">
+                  <label for="start-time">Start Time:</label>
+                  <input
+                    id="start-time"
+                    v-model="timeFilter.startTime"
+                    type="datetime-local"
+                    step="1"
+                    class="time-input"
+                    :max="timeFilter.endTime"
+                  />
+                </div>
+                <div class="time-input-group">
+                  <label for="end-time">End Time:</label>
+                  <input
+                    id="end-time"
+                    v-model="timeFilter.endTime"
+                    type="datetime-local"
+                    step="1"
+                    class="time-input"
+                    :min="timeFilter.startTime"
+                  />
+                </div>
+                <div class="time-filter-actions">
+                  <button @click="clearTimeFilter" class="clear-time-button">
+                    🗑️ Clear Filter
+                  </button>
+                  <button
+                    @click="setCurrentTimeAsEnd"
+                    class="set-current-time-button"
+                  >
+                    ⏰ Set Current as End
+                  </button>
+                </div>
+              </div>
+              <div class="filtered-files-info">
+                <span class="filtered-count">
+                  Filtered Files: {{ getFilteredFiles().length }} /
+                  {{ collectedFiles.length }}
+                </span>
+              </div>
+            </div>
           </div>
 
           <!-- Monitoring Status -->
@@ -137,11 +183,15 @@
             >
               <h6>Collected Files ({{ collectedFiles.length }}):</h6>
               <div class="file-actions-row">
-                <button
-                  @click="downloadAllCollectedFiles"
-                  class="download-all-button"
-                >
+                <button @click="downloadAllFiles" class="download-all-button">
                   📦 Download All as ZIP ({{ collectedFiles.length }})
+                </button>
+                <button
+                  @click="downloadFilteredFiles"
+                  class="download-filtered-button"
+                  :disabled="getFilteredFiles().length === 0"
+                >
+                  📦 Download Filtered as ZIP ({{ getFilteredFiles().length }})
                 </button>
                 <button
                   @click="runSequentialComparison"
@@ -311,6 +361,12 @@ export default {
 
       // Pending files collected during pause (like pendingRows in SingleComparison)
       pendingFiles: [], // Store files that were downloaded during pause
+
+      // Time range filter for collected files
+      timeFilter: {
+        startTime: null,
+        endTime: null,
+      },
 
       // Services
       fileSystemService: new FileSystemService(),
@@ -647,7 +703,7 @@ export default {
     },
 
     // Download all collected files as ZIP
-    async downloadAllCollectedFiles() {
+    async downloadAllFiles() {
       try {
         const result = await this.fileSystemService.downloadAllFilesAsZip();
         this.downloadStatus = {
@@ -663,6 +719,45 @@ export default {
         this.downloadStatus = {
           type: "error",
           message: `❌ ZIP download failed: ${error.message}`,
+        };
+        setTimeout(() => {
+          this.downloadStatus = null;
+        }, 5000);
+      }
+    },
+
+    // Download filtered files as ZIP
+    async downloadFilteredFiles() {
+      try {
+        const filteredFiles = this.getFilteredFiles();
+
+        if (filteredFiles.length === 0) {
+          this.downloadStatus = {
+            type: "error",
+            message: "❌ No files match the selected time range",
+          };
+          setTimeout(() => {
+            this.downloadStatus = null;
+          }, 5000);
+          return;
+        }
+
+        const result = await this.fileSystemService.downloadFilteredFilesAsZip(
+          filteredFiles
+        );
+        this.downloadStatus = {
+          type: "success",
+          message: `✅ Downloaded filtered ZIP with ${
+            result.count
+          } files (${this.formatFileSize(result.size)})`,
+        };
+        setTimeout(() => {
+          this.downloadStatus = null;
+        }, 3000);
+      } catch (error) {
+        this.downloadStatus = {
+          type: "error",
+          message: `❌ Filtered ZIP download failed: ${error.message}`,
         };
         setTimeout(() => {
           this.downloadStatus = null;
@@ -1327,6 +1422,50 @@ export default {
       return new Date(date).toLocaleString();
     },
 
+    // Time filter methods
+    getFilteredFiles() {
+      if (!this.timeFilter.startTime && !this.timeFilter.endTime) {
+        return this.collectedFiles;
+      }
+
+      const startTime = this.timeFilter.startTime
+        ? new Date(this.timeFilter.startTime)
+        : null;
+      const endTime = this.timeFilter.endTime
+        ? new Date(this.timeFilter.endTime)
+        : null;
+
+      return this.collectedFiles.filter((file) => {
+        const fileTime = new Date(file.timestamp);
+
+        if (startTime && fileTime < startTime) {
+          return false;
+        }
+
+        if (endTime && fileTime > endTime) {
+          return false;
+        }
+
+        return true;
+      });
+    },
+
+    clearTimeFilter() {
+      this.timeFilter.startTime = null;
+      this.timeFilter.endTime = null;
+    },
+
+    setCurrentTimeAsEnd() {
+      const now = new Date();
+      // Format for datetime-local input with seconds (YYYY-MM-DDTHH:MM:SS)
+      const localDateTime = new Date(
+        now.getTime() - now.getTimezoneOffset() * 60000
+      )
+        .toISOString()
+        .slice(0, 19);
+      this.timeFilter.endTime = localDateTime;
+    },
+
     // Helper methods from SingleComparison for comprehensive validation
 
     // Categorize periods into content and ad periods
@@ -1848,6 +1987,101 @@ export default {
   font-weight: 500;
 }
 
+/* Time Range Filter */
+.time-range-filter {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.time-range-filter h6 {
+  margin: 0 0 12px 0;
+  color: #495057;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.time-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.time-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.time-input-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #495057;
+}
+
+.time-input {
+  padding: 8px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
+  min-width: 200px;
+}
+
+.time-input:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+.time-filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.clear-time-button,
+.set-current-time-button {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.clear-time-button {
+  background: #6c757d;
+  color: white;
+}
+
+.clear-time-button:hover {
+  background: #5a6268;
+}
+
+.set-current-time-button {
+  background: #17a2b8;
+  color: white;
+}
+
+.set-current-time-button:hover {
+  background: #138496;
+}
+
+.filtered-files-info {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #dee2e6;
+}
+
+.filtered-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: #495057;
+}
+
 .download-status {
   position: fixed;
   top: 20px;
@@ -2038,6 +2272,7 @@ export default {
 }
 
 .download-all-button,
+.download-filtered-button,
 .compare-sequential-button {
   padding: 10px 16px;
   border: none;
@@ -2055,6 +2290,20 @@ export default {
 
 .download-all-button:hover {
   background: #0056b3;
+}
+
+.download-filtered-button {
+  background: #28a745;
+  color: white;
+}
+
+.download-filtered-button:hover:not(:disabled) {
+  background: #218838;
+}
+
+.download-filtered-button:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
 }
 
 .compare-sequential-button {

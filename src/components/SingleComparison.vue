@@ -68,6 +68,66 @@
       </div>
     </div>
 
+    <!-- Segment Validation Configuration -->
+    <div class="segment-validation-config">
+      <h4>🔍 Segment Validation Configuration</h4>
+      <div class="config-grid">
+        <div class="config-item">
+          <label for="maxDownloadRatio">Max Download Ratio:</label>
+          <input
+            id="maxDownloadRatio"
+            v-model.number="segmentValidationConfig.maxDownloadRatio"
+            type="number"
+            min="0.1"
+            max="5.0"
+            step="0.1"
+            class="config-input"
+          />
+          <span class="config-hint"
+            >Download time ≤ segment duration × ratio</span
+          >
+        </div>
+        <div class="config-item">
+          <label for="minSegmentDuration">Min Segment Duration (s):</label>
+          <input
+            id="minSegmentDuration"
+            v-model.number="segmentValidationConfig.minSegmentDurationSec"
+            type="number"
+            min="0.1"
+            max="10.0"
+            step="0.1"
+            class="config-input"
+          />
+          <span class="config-hint">Prevents encoder instability</span>
+        </div>
+        <div class="config-item">
+          <label for="maxSegmentDuration">Max Segment Duration (s):</label>
+          <input
+            id="maxSegmentDuration"
+            v-model.number="segmentValidationConfig.maxSegmentDurationSec"
+            type="number"
+            min="1.0"
+            max="30.0"
+            step="0.5"
+            class="config-input"
+          />
+          <span class="config-hint">Prevents high latency</span>
+        </div>
+        <div class="config-item">
+          <label for="enableDownloadTimeForVOD"
+            >Enable Download Time Check for VOD:</label
+          >
+          <input
+            id="enableDownloadTimeForVOD"
+            v-model="segmentValidationConfig.enableDownloadTimeForVOD"
+            type="checkbox"
+            class="config-checkbox"
+          />
+          <span class="config-hint">Usually disabled for VOD streams</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Video Player -->
     <div v-if="manifestUrl" class="player-section">
       <div class="player-controls">
@@ -707,6 +767,7 @@
 
 <script>
 import { DashPlayerService } from "../services/dashPlayerService.js";
+import SegmentValidationService from "../services/segmentValidationService.js";
 
 export default {
   name: "SingleComparison",
@@ -751,6 +812,16 @@ export default {
 
       // MPD refresh interval tracking
       previousMpdPublishTime: null,
+
+      // Segment validation service and configuration
+      segmentValidationService: new SegmentValidationService(),
+      segmentValidationConfig: {
+        maxDownloadRatio: 1.0, // download must be <= playback time
+        minSegmentDurationSec: 1.5,
+        maxSegmentDurationSec: 6.0,
+        enableDownloadTimeForVOD: false, // VOD streams often don't need this check
+      },
+      segmentValidationResults: null,
     };
   },
 
@@ -1113,23 +1184,39 @@ export default {
             }`,
       });
 
-      // 16. DRM Validation (Check for missing DRM nodes)
+      // 16. DRM Validation (Check for Period-level DRM requirement)
       const drmValidation = this.validateDRMPresence(periods);
       analysis.push({
         metric: "DRM Protection Status",
-        value: drmValidation.hasDRM
-          ? `Protected (${drmValidation.drmSystems.length} system${
-              drmValidation.drmSystems.length > 1 ? "s" : ""
-            })`
+        value: drmValidation.hasPeriodLevelDRM
+          ? `Period-level DRM Present (${
+              drmValidation.drmSystems.length
+            } system${drmValidation.drmSystems.length > 1 ? "s" : ""})`
+          : drmValidation.hasAnyDRM
+          ? `Missing Period-level DRM (${
+              drmValidation.missingPeriodDRM.length
+            } period${drmValidation.missingPeriodDRM.length > 1 ? "s" : ""})`
           : "No DRM Protection Found",
-        status: drmValidation.hasDRM ? "PROTECTED" : "UNPROTECTED",
-        statusClass: drmValidation.hasDRM ? "status-ok" : "status-warning",
-        hasDifference: false,
-        tooltip: drmValidation.hasDRM
-          ? `DRM Systems Found:\n${drmValidation.drmSystems.join(
+        status: drmValidation.hasPeriodLevelDRM
+          ? "PROTECTED"
+          : drmValidation.hasAnyDRM
+          ? "MISSING_PERIOD_DRM"
+          : "UNPROTECTED",
+        statusClass: drmValidation.hasPeriodLevelDRM
+          ? "status-ok"
+          : drmValidation.hasAnyDRM
+          ? "status-warning"
+          : "status-error",
+        hasDifference: !drmValidation.hasPeriodLevelDRM,
+        tooltip: drmValidation.hasPeriodLevelDRM
+          ? `✅ All periods have Period-level DRM\n\nDRM Systems Found:\n${drmValidation.drmSystems.join(
               "\n"
             )}\n\nDetails:\n${drmValidation.details}`
-          : "No ContentProtection elements found in any Period. Content is unprotected.",
+          : drmValidation.hasAnyDRM
+          ? `⚠️ DRM exists but not at Period level\n\nMissing Period-level DRM in: ${drmValidation.missingPeriodDRM.join(
+              ", "
+            )}\n\nDetails:\n${drmValidation.details}`
+          : `❌ No DRM protection found at any level\n\nDetails:\n${drmValidation.details}`,
       });
 
       // 17. DRM Signaling Validation (Production-grade semantic comparison)
@@ -4700,94 +4787,127 @@ export default {
     // NEW DETAILED FORMATTING METHODS FOR NEW VALIDATIONS:
 
     formatDetailedDownloadTimeValidation() {
-      // Show segment details with bandwidth and timing information
-      if (!this.currentManifest) return "";
-
-      try {
-        let result = "";
-        const periods = this.currentManifest.querySelectorAll("Period");
-
-        periods.forEach((period) => {
-          const periodId = period.getAttribute("id") || "unknown";
-          const adaptationSets = period.querySelectorAll("AdaptationSet");
-
-          adaptationSets.forEach((as) => {
-            const contentType = as.getAttribute("contentType") || "unknown";
-            const representations = as.querySelectorAll("Representation");
-
-            representations.forEach((rep) => {
-              const bandwidth = rep.getAttribute("bandwidth") || "unknown";
-              const width = rep.getAttribute("width") || "?";
-              const height = rep.getAttribute("height") || "?";
-              const codecs = rep.getAttribute("codecs") || "unknown";
-
-              if (rep.querySelector("SegmentTemplate")) {
-                result += `<Period id="${periodId}">\n`;
-                result += `  <AdaptationSet contentType="${contentType}">\n`;
-                result += `    <Representation bandwidth="${bandwidth}" width="${width}" height="${height}" codecs="${codecs}">\n`;
-
-                const segmentTemplate = rep.querySelector("SegmentTemplate");
-                const serializer = new XMLSerializer();
-                let templateXml = serializer.serializeToString(segmentTemplate);
-                templateXml = this.formatXmlWithIndentation(templateXml, 6);
-                result += templateXml + "\n";
-
-                result += `    </Representation>\n`;
-                result += `  </AdaptationSet>\n`;
-                result += `</Period>\n\n`;
-              }
-            });
-          });
-        });
-
-        return result.trim() || "";
-      } catch (error) {
-        return "";
+      if (
+        !this.segmentValidationResults ||
+        !this.segmentValidationResults.hasCritical
+      ) {
+        const totalSegments = this.segmentValidationResults?.totalSegments || 0;
+        return `✅ All ${totalSegments} segments pass validation rules\n\nValidation Rules:\n• Download time ≤ segment duration × ${this.segmentValidationConfig.maxDownloadRatio}\n• Segment duration ≥ ${this.segmentValidationConfig.minSegmentDurationSec}s\n• Segment duration ≤ ${this.segmentValidationConfig.maxSegmentDurationSec}s`;
       }
+
+      const violations = this.segmentValidationResults.violations;
+      const totalSegments = this.segmentValidationResults.totalSegments;
+
+      let result = `🔴 CRITICAL VIOLATIONS FOUND: ${violations.length} out of ${totalSegments} segments\n\n`;
+
+      // Group violations by rule type
+      const violationsByRule = {};
+      violations.forEach((violation) => {
+        if (!violationsByRule[violation.rule]) {
+          violationsByRule[violation.rule] = [];
+        }
+        violationsByRule[violation.rule].push(violation);
+      });
+
+      // Display violations by rule type
+      Object.keys(violationsByRule).forEach((rule) => {
+        const ruleViolations = violationsByRule[rule];
+        result += `\n=== ${rule} (${ruleViolations.length} violations) ===\n`;
+
+        ruleViolations.forEach((violation) => {
+          result +=
+            this.segmentValidationService.formatSegmentDetails(violation) +
+            "\n";
+        });
+      });
+
+      return result;
     },
 
     formatDetailedDRMStatus() {
-      // Show actual ContentProtection elements from MPD
+      // Show Period-level DRM requirement analysis
       if (!this.currentManifest) return "";
 
       try {
-        let result = "";
+        let result = "=== PERIOD-LEVEL DRM REQUIREMENT ANALYSIS ===\n\n";
 
-        // MPD-level ContentProtection
-        const mpdContentProtections = this.currentManifest.querySelectorAll(
-          "MPD > ContentProtection"
-        );
-        if (mpdContentProtections.length > 0) {
-          result += "MPD-level ContentProtection:\n";
-          Array.from(mpdContentProtections).forEach((cp) => {
-            const serializer = new XMLSerializer();
-            let cpXml = serializer.serializeToString(cp);
-            cpXml = this.formatXmlWithIndentation(cpXml, 0);
-            result += cpXml + "\n\n";
-          });
-        }
-
-        // Period-level ContentProtection
+        // Check each Period for ContentProtection
         const periods = this.currentManifest.querySelectorAll("Period");
-        periods.forEach((period) => {
-          const periodId = period.getAttribute("id") || "unknown";
-          const contentProtections =
-            period.querySelectorAll("ContentProtection");
+        let periodsWithDRM = 0;
+        let periodsWithoutDRM = [];
+
+        periods.forEach((period, index) => {
+          const periodId = period.getAttribute("id") || `period_${index}`;
+          const contentProtections = period.querySelectorAll(
+            ":scope > ContentProtection"
+          );
 
           if (contentProtections.length > 0) {
-            result += `Period ${periodId} ContentProtection:\n`;
-            Array.from(contentProtections).forEach((cp) => {
-              const serializer = new XMLSerializer();
-              let cpXml = serializer.serializeToString(cp);
-              cpXml = this.formatXmlWithIndentation(cpXml, 0);
-              result += cpXml + "\n\n";
+            periodsWithDRM++;
+            result += `✅ Period ${periodId}: HAS Period-level ContentProtection (${
+              contentProtections.length
+            } element${contentProtections.length > 1 ? "s" : ""})\n`;
+
+            Array.from(contentProtections).forEach((cp, cpIndex) => {
+              const schemeId = cp.getAttribute("schemeIdUri") || "Unknown";
+              result += `   └─ ContentProtection[${cpIndex}]: ${schemeId}\n`;
             });
+          } else {
+            periodsWithoutDRM.push(periodId);
+            result += `❌ Period ${periodId}: MISSING Period-level ContentProtection\n`;
           }
         });
 
-        return result.trim() || "No ContentProtection elements found";
+        result += `\n=== SUMMARY ===\n`;
+        result += `Total Periods: ${periods.length}\n`;
+        result += `Periods with Period-level DRM: ${periodsWithDRM}\n`;
+        result += `Periods missing Period-level DRM: ${periodsWithoutDRM.length}\n`;
+
+        if (periodsWithoutDRM.length > 0) {
+          result += `\n❌ REQUIREMENT VIOLATION: The following periods lack Period-level ContentProtection:\n`;
+          result += `   ${periodsWithoutDRM.join(", ")}\n`;
+        } else {
+          result += `\n✅ REQUIREMENT SATISFIED: All periods have Period-level ContentProtection\n`;
+        }
+
+        // Show informational context about other DRM levels
+        const mpdContentProtections = this.currentManifest.querySelectorAll(
+          "MPD > ContentProtection"
+        );
+        const asContentProtections = this.currentManifest.querySelectorAll(
+          "AdaptationSet ContentProtection"
+        );
+        const repContentProtections = this.currentManifest.querySelectorAll(
+          "Representation ContentProtection"
+        );
+
+        if (
+          mpdContentProtections.length > 0 ||
+          asContentProtections.length > 0 ||
+          repContentProtections.length > 0
+        ) {
+          result += `\n=== OTHER DRM LEVELS (INFORMATIONAL) ===\n`;
+          if (mpdContentProtections.length > 0) {
+            result += `MPD-level ContentProtection: ${
+              mpdContentProtections.length
+            } element${mpdContentProtections.length > 1 ? "s" : ""}\n`;
+          }
+          if (asContentProtections.length > 0) {
+            result += `AdaptationSet-level ContentProtection: ${
+              asContentProtections.length
+            } element${asContentProtections.length > 1 ? "s" : ""}\n`;
+          }
+          if (repContentProtections.length > 0) {
+            result += `Representation-level ContentProtection: ${
+              repContentProtections.length
+            } element${repContentProtections.length > 1 ? "s" : ""}\n`;
+          }
+          result += `\nNote: These do NOT satisfy the Period-level DRM requirement.\n`;
+        }
+
+        return result;
       } catch (error) {
-        return "";
+        return "Error analyzing Period-level DRM requirement";
       }
     },
 
@@ -5597,20 +5717,46 @@ export default {
 
     // NEW VALIDATION METHODS REQUESTED BY USER:
 
-    // REMOVED: Download time validation cannot be accurately done in frontend
-    // This requires real network measurements, CDN behavior analysis, and TCP slow start knowledge
-    // eslint-disable-next-line no-unused-vars
+    // Enhanced segment validation with per-segment analysis
     validateDownloadTimeVsSegmentDuration(periods) {
-      console.warn(
-        "Download time validation is not reliable in frontend - requires backend measurement"
-      );
+      try {
+        // Extract segment information from periods
+        const segments =
+          this.segmentValidationService.extractSegmentInfo(periods);
 
-      return {
-        valid: true, // Always pass since we can't measure accurately
-        issues: [],
-        segmentDetails:
-          "Download time validation requires backend measurement with real network conditions",
-      };
+        // Validate all segments
+        const validationResults =
+          this.segmentValidationService.validateAllSegments(
+            segments,
+            this.segmentValidationConfig
+          );
+
+        // Store results for detailed display
+        this.segmentValidationResults = validationResults;
+
+        const hasCritical = validationResults.hasCritical;
+        const violationCount = validationResults.violations.length;
+        const totalSegments = validationResults.totalSegments;
+
+        return {
+          valid: !hasCritical,
+          issues: validationResults.violations.map((v) => v.message),
+          segmentDetails: hasCritical
+            ? `🔴 CRITICAL: ${violationCount} segments violate rules out of ${totalSegments} total segments`
+            : `✅ All ${totalSegments} segments pass validation rules`,
+          violations: validationResults.violations,
+          totalSegments: totalSegments,
+        };
+      } catch (error) {
+        console.error("Segment validation failed:", error);
+        return {
+          valid: false,
+          issues: [`Segment validation failed: ${error.message}`],
+          segmentDetails: "Validation error occurred",
+          violations: [],
+          totalSegments: 0,
+        };
+      }
     },
 
     // Helper method to estimate segment download time
@@ -5627,19 +5773,21 @@ export default {
     },
 
     // 2. Validate DRM Presence
+    // CORRECT: Validate DRM Presence - specifically Period-level DRM requirement
     validateDRMPresence(periods) {
       const drmSystems = [];
       const details = [];
-      let hasDRM = false;
+      let hasAnyDRM = false;
+      let missingPeriodDRM = [];
 
       try {
-        // Check MPD-level ContentProtection
+        // Check for DRM at any level (informational)
         if (this.currentManifest) {
           const mpdContentProtections = this.currentManifest.querySelectorAll(
             "MPD > ContentProtection"
           );
           if (mpdContentProtections.length > 0) {
-            hasDRM = true;
+            hasAnyDRM = true;
             Array.from(mpdContentProtections).forEach((cp) => {
               const schemeId = cp.getAttribute("schemeIdUri") || "Unknown";
               drmSystems.push(`MPD-level: ${schemeId}`);
@@ -5647,18 +5795,35 @@ export default {
           }
         }
 
+        // REQUIREMENT-SPECIFIC: Check Period-level DRM explicitly
         periods.forEach((period, periodIndex) => {
           const periodId =
             period.id?.parsed ||
             period.id?.raw ||
             period.id ||
             `period_${periodIndex}`;
-          const adaptationSets = this.ensureArray(period.AdaptationSet);
 
+          // Check if this Period has ContentProtection directly
+          const periodHasDRM =
+            Array.isArray(period.ContentProtection) &&
+            period.ContentProtection.length > 0;
+
+          if (!periodHasDRM) {
+            missingPeriodDRM.push(periodId);
+          } else {
+            hasAnyDRM = true;
+            period.ContentProtection.forEach((cp) => {
+              const schemeId = cp.schemeIdUri || "Unknown";
+              drmSystems.push(`Period ${periodId}: ${schemeId}`);
+            });
+          }
+
+          // Also check AdaptationSet and Representation levels (informational only)
+          const adaptationSets = this.ensureArray(period.AdaptationSet);
           adaptationSets.forEach((as, asIndex) => {
             // Check AdaptationSet-level ContentProtection
             if (as.ContentProtection && as.ContentProtection.length > 0) {
-              hasDRM = true;
+              hasAnyDRM = true;
               as.ContentProtection.forEach((cp) => {
                 const schemeId = cp.schemeIdUri || "Unknown";
                 drmSystems.push(`Period ${periodId}.AS${asIndex}: ${schemeId}`);
@@ -5669,7 +5834,7 @@ export default {
             representations.forEach((rep, repIndex) => {
               // Check Representation-level ContentProtection
               if (rep.ContentProtection && rep.ContentProtection.length > 0) {
-                hasDRM = true;
+                hasAnyDRM = true;
                 rep.ContentProtection.forEach((cp) => {
                   const schemeId = cp.schemeIdUri || "Unknown";
                   drmSystems.push(
@@ -5681,13 +5846,31 @@ export default {
           });
         });
 
-        if (hasDRM) {
+        // Generate requirement-specific messages
+        const hasPeriodLevelDRM = missingPeriodDRM.length === 0;
+
+        if (hasPeriodLevelDRM) {
           details.push(
-            `Found ${drmSystems.length} DRM system(s) across MPD, AdaptationSet, and Representation levels`
+            `✅ All ${periods.length} periods have Period-level ContentProtection`
           );
         } else {
           details.push(
-            "No ContentProtection elements found at any level (MPD, AdaptationSet, or Representation)"
+            `❌ Missing Period-level DRM in periods: ${missingPeriodDRM.join(
+              ", "
+            )}`
+          );
+        }
+
+        // Add informational context about other DRM levels
+        if (hasAnyDRM && !hasPeriodLevelDRM) {
+          details.push(
+            `ℹ️ DRM found at other levels (MPD/AdaptationSet/Representation) but requirement is specifically for Period-level DRM`
+          );
+        }
+
+        if (!hasAnyDRM) {
+          details.push(
+            "ℹ️ No ContentProtection elements found at any level (MPD, Period, AdaptationSet, or Representation)"
           );
         }
       } catch (error) {
@@ -5696,9 +5879,16 @@ export default {
       }
 
       return {
-        hasDRM,
+        hasAnyDRM,
+        hasPeriodLevelDRM: missingPeriodDRM.length === 0,
+        hasDRM: missingPeriodDRM.length === 0, // For backward compatibility
         drmSystems: [...new Set(drmSystems)], // Remove duplicates
         details: details.join("\n"),
+        missingPeriodDRM,
+        issues:
+          missingPeriodDRM.length > 0
+            ? [`No Period-level DRM in periods: ${missingPeriodDRM.join(", ")}`]
+            : [],
       };
     },
 
@@ -6771,6 +6961,65 @@ export default {
 
 .load-button:hover {
   background: #0056b3;
+}
+
+/* Segment Validation Configuration */
+.segment-validation-config {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  margin-bottom: 24px;
+}
+
+.segment-validation-config h4 {
+  color: #2c3e50;
+  margin: 0 0 16px 0;
+  font-size: 18px;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-item label {
+  font-weight: 600;
+  color: #495057;
+  font-size: 14px;
+}
+
+.config-input {
+  padding: 8px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
+  width: 100px;
+}
+
+.config-input:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+.config-checkbox {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.config-hint {
+  font-size: 12px;
+  color: #6c757d;
+  font-style: italic;
 }
 
 .load-button:disabled {

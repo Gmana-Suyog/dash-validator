@@ -684,6 +684,69 @@ export class FileSystemService {
   }
 
   /**
+   * Download filtered files as a single ZIP file
+   */
+  async downloadFilteredFilesAsZip(filteredFiles, zipFilename = null) {
+    if (!filteredFiles || filteredFiles.length === 0) {
+      throw new Error("No files to download");
+    }
+
+    try {
+      console.log(
+        `📦 Creating ZIP with ${filteredFiles.length} filtered files...`
+      );
+
+      // Create a new JSZip instance
+      const zip = new JSZip();
+
+      // Add each filtered MPD file to the ZIP
+      for (const fileData of filteredFiles) {
+        zip.file(fileData.filename, fileData.content);
+      }
+
+      // Generate the ZIP file
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: {
+          level: 6,
+        },
+      });
+
+      // Create download filename with timestamp if not provided
+      if (!zipFilename) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        zipFilename = `filtered-mpd-files_${timestamp}.zip`;
+      }
+
+      // Trigger download
+      const downloadUrl = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = zipFilename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(downloadUrl);
+
+      console.log(
+        `✅ Filtered ZIP downloaded: ${zipFilename} (${filteredFiles.length} files)`
+      );
+
+      return {
+        success: true,
+        filename: zipFilename,
+        count: filteredFiles.length,
+        size: zipBlob.size,
+      };
+    } catch (error) {
+      console.error("❌ Filtered ZIP download failed:", error);
+      throw new Error(`Failed to create filtered ZIP: ${error.message}`);
+    }
+  }
+
+  /**
    * Perform sequential comparison like SingleComparison (previous vs current)
    */
   performSequentialComparison() {
