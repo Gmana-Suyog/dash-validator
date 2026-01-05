@@ -141,7 +141,7 @@
                   @click="downloadAllCollectedFiles"
                   class="download-all-button"
                 >
-                  💾 Download All Files ({{ collectedFiles.length }})
+                  📦 Download All as ZIP ({{ collectedFiles.length }})
                 </button>
                 <button
                   @click="runSequentialComparison"
@@ -646,13 +646,15 @@ export default {
       )}m`;
     },
 
-    // Download all collected files
+    // Download all collected files as ZIP
     async downloadAllCollectedFiles() {
       try {
-        await this.fileSystemService.downloadAllFiles();
+        const result = await this.fileSystemService.downloadAllFilesAsZip();
         this.downloadStatus = {
           type: "success",
-          message: `✅ Downloaded ${this.collectedFiles.length} files`,
+          message: `✅ Downloaded ZIP with ${
+            result.count
+          } files (${this.formatFileSize(result.size)})`,
         };
         setTimeout(() => {
           this.downloadStatus = null;
@@ -660,7 +662,7 @@ export default {
       } catch (error) {
         this.downloadStatus = {
           type: "error",
-          message: `❌ Download failed: ${error.message}`,
+          message: `❌ ZIP download failed: ${error.message}`,
         };
         setTimeout(() => {
           this.downloadStatus = null;

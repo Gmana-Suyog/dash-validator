@@ -2,6 +2,8 @@
  * File System Service for handling MPD file downloads and local file operations
  */
 
+import JSZip from "jszip";
+
 export class FileSystemService {
   constructor() {
     this.downloadFolder = "mpd-downloads";
@@ -618,6 +620,67 @@ export class FileSystemService {
       success: true,
       count: this.monitoringState.downloadedFiles.length,
     };
+  }
+
+  /**
+   * Download all collected files as a single ZIP file
+   */
+  async downloadAllFilesAsZip() {
+    if (this.monitoringState.downloadedFiles.length === 0) {
+      throw new Error("No files to download");
+    }
+
+    try {
+      console.log(
+        `📦 Creating ZIP with ${this.monitoringState.downloadedFiles.length} files...`
+      );
+
+      // Create a new JSZip instance
+      const zip = new JSZip();
+
+      // Add each MPD file to the ZIP
+      for (const fileData of this.monitoringState.downloadedFiles) {
+        zip.file(fileData.filename, fileData.content);
+      }
+
+      // Generate the ZIP file
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: {
+          level: 6,
+        },
+      });
+
+      // Create download filename with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const zipFilename = `mpd-files_${timestamp}.zip`;
+
+      // Trigger download
+      const downloadUrl = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = zipFilename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(downloadUrl);
+
+      console.log(
+        `✅ ZIP downloaded: ${zipFilename} (${this.monitoringState.downloadedFiles.length} files)`
+      );
+
+      return {
+        success: true,
+        filename: zipFilename,
+        count: this.monitoringState.downloadedFiles.length,
+        size: zipBlob.size,
+      };
+    } catch (error) {
+      console.error("❌ ZIP download failed:", error);
+      throw new Error(`Failed to create ZIP: ${error.message}`);
+    }
   }
 
   /**
