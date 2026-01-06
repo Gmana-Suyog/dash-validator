@@ -101,6 +101,7 @@
             <th>Attribute</th>
             <th>Source Value</th>
             <th>SSAI Value</th>
+            <th>DRM Signaling</th>
             <th>How to Solve the Issue?</th>
           </tr>
         </thead>
@@ -123,6 +124,13 @@
             </td>
             <td data-label="SSAI Value" class="value-cell">
               {{ item.ssaiValue }}
+            </td>
+            <td
+              data-label="DRM Signaling"
+              class="drm-signaling-cell"
+              :class="getDrmSignalingClass()"
+            >
+              {{ getDrmSignalingSummary() }}
             </td>
             <td data-label="Solution" class="solution-cell">
               {{ item.solution }}
@@ -510,6 +518,331 @@ export default {
       ];
 
       return knownAttributes.includes(attribute.toLowerCase());
+    },
+
+    // ===== DRM SIGNALING METHODS =====
+
+    // Get DRM signaling summary for Source vs SSAI comparison
+    getDrmSignalingSummary() {
+      if (!this.sourceManifest || !this.ssaiManifest) {
+        return "No manifests to compare";
+      }
+
+      try {
+        // Extract effective CENC state from both manifests
+        const sourceCenc = this.extractEffectiveCENC(this.sourceManifest);
+        const ssaiCenc = this.extractEffectiveCENC(this.ssaiManifest);
+
+        // Compare the CENC states
+        const comparison = this.compareEffectiveCENC(sourceCenc, ssaiCenc);
+
+        return comparison.summary;
+      } catch (error) {
+        console.error("DRM signaling comparison failed:", error);
+        return "Comparison failed";
+      }
+    },
+
+    // Get DRM signaling CSS class
+    getDrmSignalingClass() {
+      if (!this.sourceManifest || !this.ssaiManifest) {
+        return "drm-no-data";
+      }
+
+      try {
+        // Extract effective CENC state from both manifests
+        const sourceCenc = this.extractEffectiveCENC(this.sourceManifest);
+        const ssaiCenc = this.extractEffectiveCENC(this.ssaiManifest);
+
+        // Compare the CENC states
+        const comparison = this.compareEffectiveCENC(sourceCenc, ssaiCenc);
+
+        return comparison.statusClass;
+      } catch (error) {
+        console.error("DRM signaling comparison failed:", error);
+        return "drm-error";
+      }
+    },
+
+    // Core primitive: Extract effective CENC state from manifest
+    extractEffectiveCENC(manifest) {
+      const effectiveState = {
+        present: false,
+        value: null, // "cenc" | "cbcs" | null
+        kids: new Set(), // normalized UUIDs
+      };
+
+      if (!manifest) {
+        return effectiveState;
+      }
+
+      try {
+        // Step 1: Resolve DASH inheritance for each content representation (ignore ads)
+        const periods = Array.from(manifest.querySelectorAll("Period"));
+        const contentPeriods = this.filterAdPeriods
+          ? this.filterAdPeriods(periods)
+          : periods;
+
+        contentPeriods.forEach((period) => {
+          const adaptationSets = Array.from(
+            period.querySelectorAll("AdaptationSet")
+          );
+
+          adaptationSets.forEach((adaptationSet) => {
+            const representations = Array.from(
+              adaptationSet.querySelectorAll("Representation")
+            );
+
+            // Process each representation to find effective CENC
+            representations.forEach((representation) => {
+              const effectiveCenc = this.resolveEffectiveCENCForRepresentation(
+                manifest,
+                period,
+                adaptationSet,
+                representation
+              );
+
+              if (effectiveCenc) {
+                effectiveState.present = true;
+
+                // Ensure value consistency
+                if (
+                  effectiveState.value &&
+                  effectiveState.value !== effectiveCenc.value
+                ) {
+                  console.warn(
+                    "CRITICAL: Different CENC values found across representations",
+                    {
+                      existing: effectiveState.value,
+                      new: effectiveCenc.value,
+                    }
+                  );
+                }
+                effectiveState.value = effectiveCenc.value;
+
+                // Union all KIDs
+                if (effectiveCenc.defaultKID) {
+                  effectiveState.kids.add(effectiveCenc.defaultKID);
+                }
+              }
+            });
+          });
+        });
+
+        console.log("Extracted effective CENC state:", {
+          present: effectiveState.present,
+          value: effectiveState.value,
+          kids: Array.from(effectiveState.kids),
+        });
+      } catch (error) {
+        console.error("Failed to extract effective CENC:", error);
+      }
+
+      return effectiveState;
+    },
+
+    // Resolve effective CENC for a single representation using DASH inheritance
+    resolveEffectiveCENCForRepresentation(
+      manifest,
+      period,
+      adaptationSet,
+      representation
+    ) {
+      // Priority order: Representation → AdaptationSet → Period → MPD
+      const elements = [
+        representation,
+        adaptationSet,
+        period,
+        manifest.querySelector("MPD"),
+      ];
+
+      for (const element of elements) {
+        if (!element) continue;
+
+        const contentProtections = Array.from(
+          element.querySelectorAll(":scope > ContentProtection")
+        );
+
+        for (const cp of contentProtections) {
+          const schemeIdUri = cp.getAttribute("schemeIdUri");
+          if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+            const value = cp.getAttribute("value");
+            const cencInfo = this.extractCENCInfo(cp);
+
+            return {
+              value: value,
+              defaultKID: cencInfo ? cencInfo.defaultKID : null,
+            };
+          }
+        }
+      }
+
+      return null;
+    },
+
+    // Extract CENC information with proper normalization
+    extractCENCInfo(contentProtectionElement) {
+      try {
+        const value = contentProtectionElement.getAttribute("value") || "";
+
+        // Extract default_KID - handle multiple possible attribute names and namespaces
+        let defaultKID = null;
+
+        // Try different possible attribute names (namespace-agnostic)
+        const possibleKIDAttributes = [
+          "cenc:default_KID",
+          "default_KID",
+          "defaultKID",
+          "cenc:defaultKID",
+        ];
+
+        for (const attrName of possibleKIDAttributes) {
+          const kidValue = contentProtectionElement.getAttribute(attrName);
+          if (kidValue) {
+            // Complete default_KID normalization with brace stripping
+            defaultKID = kidValue
+              .toLowerCase()
+              .replace(/[{}]/g, "") // Strip braces: {ca2428ae-8f61-4bcd-b717-2ae6faf8b11d}
+              .trim();
+            break;
+          }
+        }
+
+        // Also check for KID in child elements
+        if (!defaultKID) {
+          const kidElements = contentProtectionElement.querySelectorAll("*");
+          for (const elem of kidElements) {
+            if (
+              elem.textContent &&
+              elem.textContent.match(/^[{]?[0-9a-f-]{36}[}]?$/i)
+            ) {
+              // Complete default_KID normalization with brace stripping
+              defaultKID = elem.textContent
+                .toLowerCase()
+                .replace(/[{}]/g, "") // Strip braces
+                .trim();
+              break;
+            }
+          }
+        }
+
+        return {
+          value: value,
+          defaultKID: defaultKID,
+        };
+      } catch (error) {
+        console.error("Failed to extract CENC info:", error);
+        return null;
+      }
+    },
+
+    // Comparison primitive: Compare two effective CENC states
+    compareEffectiveCENC(prevState, currState) {
+      const comparison = {
+        summary: "",
+        status: "OK",
+        statusClass: "status-ok",
+        changed: false,
+        details: "",
+      };
+
+      try {
+        // Check for DRM presence changes
+        if (!prevState.present && currState.present) {
+          comparison.changed = true;
+          comparison.status = "DRM_ADDED";
+          comparison.statusClass = "status-warning";
+          comparison.summary = "DRM added by SSAI";
+          comparison.details = `CENC added: value=${currState.value}, KIDs=${
+            Array.from(currState.kids).join(", ") || "none"
+          }`;
+        } else if (prevState.present && !currState.present) {
+          comparison.changed = true;
+          comparison.status = "DRM_REMOVED";
+          comparison.statusClass = "status-error-red";
+          comparison.summary = "DRM removed by SSAI (CRITICAL)";
+          comparison.details =
+            "CRITICAL: DRM protection removed by SSAI - stream now unprotected";
+        } else if (!prevState.present && !currState.present) {
+          comparison.summary = "No DRM";
+          comparison.details = "No CENC protection in either manifest";
+          return comparison;
+        }
+
+        // Both have DRM - check for changes
+        if (prevState.present && currState.present) {
+          const changes = [];
+          const details = [];
+
+          // Check for critical value changes (cenc ↔ cbcs)
+          if (prevState.value !== currState.value) {
+            comparison.changed = true;
+            comparison.status = "CRITICAL_VALUE_CHANGE";
+            comparison.statusClass = "status-error-red";
+            changes.push("Critical CENC value change");
+            details.push(
+              `⚠️ CRITICAL: CENC value changed from ${prevState.value} to ${currState.value} - breaks playback compatibility`
+            );
+          }
+
+          // Check for key rotation (KID changes)
+          const prevKids = prevState.kids;
+          const currKids = currState.kids;
+
+          if (!this.setsEqual(prevKids, currKids)) {
+            comparison.changed = true;
+            if (comparison.status === "OK") {
+              comparison.status = "KEY_ROTATION";
+              comparison.statusClass = "status-error-red";
+            }
+            changes.push("Key rotation introduced by SSAI");
+
+            const addedKids = [...currKids].filter((kid) => !prevKids.has(kid));
+            const removedKids = [...prevKids].filter(
+              (kid) => !currKids.has(kid)
+            );
+
+            if (addedKids.length > 0) {
+              details.push(`Added KIDs: ${addedKids.join(", ")}`);
+            }
+            if (removedKids.length > 0) {
+              details.push(`Removed KIDs: ${removedKids.join(", ")}`);
+            }
+          }
+
+          // Generate final summary
+          if (comparison.changed) {
+            comparison.summary = changes.join(", ");
+          } else {
+            comparison.summary = `Unchanged: CENC(${currState.value})`;
+          }
+
+          comparison.details = details.join("\n");
+        }
+      } catch (error) {
+        console.error("CENC comparison failed:", error);
+        comparison.summary = "Comparison failed";
+        comparison.status = "ERROR";
+        comparison.statusClass = "status-error";
+        comparison.details = `Comparison failed: ${error.message}`;
+      }
+
+      return comparison;
+    },
+
+    // Helper: Check if two sets are equal
+    setsEqual(set1, set2) {
+      if (set1.size !== set2.size) return false;
+      for (const item of set1) {
+        if (!set2.has(item)) return false;
+      }
+      return true;
+    },
+
+    // Filter ad periods (placeholder - implement based on your ad detection logic)
+    filterAdPeriods(periods) {
+      // For now, return all periods - you can implement ad filtering logic here
+      return periods;
     },
   },
 };
@@ -998,6 +1331,47 @@ export default {
   background: #f8fafc;
   border-radius: 4px;
   padding: 8px 12px;
+}
+
+.drm-signaling-cell {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  max-width: 180px;
+  word-break: break-word;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.drm-signaling-cell.status-ok {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.drm-signaling-cell.status-warning {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.drm-signaling-cell.status-error-red {
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.2);
+}
+
+.drm-signaling-cell.drm-no-data {
+  background: rgba(107, 114, 128, 0.1);
+  color: #6b7280;
+  border: 1px solid rgba(107, 114, 128, 0.2);
+}
+
+.drm-signaling-cell.drm-error {
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.2);
 }
 
 .solution-cell {

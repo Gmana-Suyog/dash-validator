@@ -6544,6 +6544,227 @@ export default {
       return changes;
     },
 
+    // ===== ABSTRACTION FOR REUSABLE DRM COMPARISON =====
+
+    // Core primitive: Extract effective CENC state from manifest
+    extractEffectiveCENC(manifest) {
+      const effectiveState = {
+        present: false,
+        value: null, // "cenc" | "cbcs" | null
+        kids: new Set(), // normalized UUIDs
+      };
+
+      if (!manifest) {
+        return effectiveState;
+      }
+
+      try {
+        // Step 1: Resolve DASH inheritance for each content representation (ignore ads)
+        const periods = Array.from(manifest.querySelectorAll("Period"));
+        const contentPeriods = this.filterAdPeriods
+          ? this.filterAdPeriods(periods)
+          : periods;
+
+        contentPeriods.forEach((period) => {
+          const adaptationSets = Array.from(
+            period.querySelectorAll("AdaptationSet")
+          );
+
+          adaptationSets.forEach((adaptationSet) => {
+            const representations = Array.from(
+              adaptationSet.querySelectorAll("Representation")
+            );
+
+            // Process each representation to find effective CENC
+            representations.forEach((representation) => {
+              const effectiveCenc = this.resolveEffectiveCENCForRepresentation(
+                manifest,
+                period,
+                adaptationSet,
+                representation
+              );
+
+              if (effectiveCenc) {
+                effectiveState.present = true;
+
+                // Ensure value consistency
+                if (
+                  effectiveState.value &&
+                  effectiveState.value !== effectiveCenc.value
+                ) {
+                  console.warn(
+                    "CRITICAL: Different CENC values found across representations",
+                    {
+                      existing: effectiveState.value,
+                      new: effectiveCenc.value,
+                    }
+                  );
+                }
+                effectiveState.value = effectiveCenc.value;
+
+                // Union all KIDs
+                if (effectiveCenc.defaultKID) {
+                  effectiveState.kids.add(effectiveCenc.defaultKID);
+                }
+              }
+            });
+          });
+        });
+
+        console.log("Extracted effective CENC state:", {
+          present: effectiveState.present,
+          value: effectiveState.value,
+          kids: Array.from(effectiveState.kids),
+        });
+      } catch (error) {
+        console.error("Failed to extract effective CENC:", error);
+      }
+
+      return effectiveState;
+    },
+
+    // Resolve effective CENC for a single representation using DASH inheritance
+    resolveEffectiveCENCForRepresentation(
+      manifest,
+      period,
+      adaptationSet,
+      representation
+    ) {
+      // Priority order: Representation → AdaptationSet → Period → MPD
+      const elements = [
+        representation,
+        adaptationSet,
+        period,
+        manifest.querySelector("MPD"),
+      ];
+
+      for (const element of elements) {
+        if (!element) continue;
+
+        const contentProtections = Array.from(
+          element.querySelectorAll(":scope > ContentProtection")
+        );
+
+        for (const cp of contentProtections) {
+          const schemeIdUri = cp.getAttribute("schemeIdUri");
+          if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+            const value = cp.getAttribute("value");
+            const cencInfo = this.extractCENCInfo(cp);
+
+            return {
+              value: value,
+              defaultKID: cencInfo ? cencInfo.defaultKID : null,
+            };
+          }
+        }
+      }
+
+      return null;
+    },
+
+    // Comparison primitive: Compare two effective CENC states
+    compareEffectiveCENC(prevState, currState) {
+      const comparison = {
+        summary: "",
+        status: "OK",
+        statusClass: "status-ok",
+        changed: false,
+        details: "",
+      };
+
+      try {
+        // Check for DRM presence changes
+        if (!prevState.present && currState.present) {
+          comparison.changed = true;
+          comparison.status = "DRM_ADDED";
+          comparison.statusClass = "status-warning";
+          comparison.summary = "DRM protection added";
+          comparison.details = `CENC added: value=${currState.value}, KIDs=${
+            Array.from(currState.kids).join(", ") || "none"
+          }`;
+        } else if (prevState.present && !currState.present) {
+          comparison.changed = true;
+          comparison.status = "DRM_REMOVED";
+          comparison.statusClass = "status-error-red";
+          comparison.summary = "DRM protection removed";
+          comparison.details =
+            "CRITICAL: DRM protection removed - stream now unprotected";
+        } else if (!prevState.present && !currState.present) {
+          comparison.summary = "No DRM (unchanged)";
+          comparison.details = "No CENC protection in either manifest";
+          return comparison;
+        }
+
+        // Both have DRM - check for changes
+        if (prevState.present && currState.present) {
+          const changes = [];
+          const details = [];
+
+          // Check for critical value changes (cenc ↔ cbcs)
+          if (prevState.value !== currState.value) {
+            comparison.changed = true;
+            comparison.status = "CRITICAL_VALUE_CHANGE";
+            comparison.statusClass = "status-error-red";
+            changes.push("Critical CENC value change");
+            details.push(
+              `⚠️ CRITICAL: CENC value changed from ${prevState.value} to ${currState.value} - breaks playback compatibility`
+            );
+          }
+
+          // Check for key rotation (KID changes)
+          const prevKids = prevState.kids;
+          const currKids = currState.kids;
+
+          if (!this.setsEqual(prevKids, currKids)) {
+            comparison.changed = true;
+            if (comparison.status === "OK") {
+              comparison.status = "KEY_ROTATION";
+              comparison.statusClass = "status-error-red";
+            }
+            changes.push("CENC key rotation detected");
+
+            const addedKids = [...currKids].filter((kid) => !prevKids.has(kid));
+            const removedKids = [...prevKids].filter(
+              (kid) => !currKids.has(kid)
+            );
+
+            if (addedKids.length > 0) {
+              details.push(`Added KIDs: ${addedKids.join(", ")}`);
+            }
+            if (removedKids.length > 0) {
+              details.push(`Removed KIDs: ${removedKids.join(", ")}`);
+            }
+          }
+
+          // Generate final summary
+          if (comparison.changed) {
+            comparison.summary = changes.join(", ");
+          } else {
+            comparison.summary = `Unchanged: CENC(${currState.value})`;
+          }
+
+          comparison.details = details.join("\n");
+        }
+      } catch (error) {
+        console.error("CENC comparison failed:", error);
+        comparison.summary = "Comparison failed";
+        comparison.status = "ERROR";
+        comparison.statusClass = "status-error";
+        comparison.details = `Comparison failed: ${error.message}`;
+      }
+
+      return comparison;
+    },
+
+    // Helper: Check if two sets are equal
+    setsEqual(set1, set2) {
+      if (set1.size !== set2.size) return false;
+      for (const item of set1) {
+        if (!set2.has(item)) return false;
+      }
+      return true;
+    },
+
     // CORRECT: Compare period start times using segment-derived timing
     comparePeriodStartTimes(periods) {
       const issues = [];
