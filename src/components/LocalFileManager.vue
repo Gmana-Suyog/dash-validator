@@ -213,7 +213,7 @@
         <h4>📁 Select MPD Files for Comparison</h4>
         <p>
           Upload MPD files from your device to run sequential comparison
-          analysis
+          analysis using the same logic as Single Comparison
         </p>
       </div>
 
@@ -323,6 +323,500 @@
         </div>
       </div>
     </div>
+
+    <!-- Comparison Results Section -->
+    <div v-if="comparisonHistory.length > 0" class="comparison-results-section">
+      <div class="table-header">
+        <h3>📊 Comparison Analysis Results</h3>
+        <div class="scroll-hint">
+          <span class="scroll-indicator"
+            >← Scroll horizontally to see all columns →</span
+          >
+        </div>
+        <div class="table-controls">
+          <div class="view-toggle">
+            <button
+              @click="isDetailedView = false"
+              :class="['view-toggle-button', { active: !isDetailedView }]"
+            >
+              Normal View
+            </button>
+            <button
+              @click="isDetailedView = true"
+              :class="['view-toggle-button', { active: isDetailedView }]"
+            >
+              Detailed View
+            </button>
+          </div>
+          <div class="update-info">
+            <div class="legend">
+              <span class="legend-item">
+                <span class="legend-color latest"></span>
+                Latest Comparison
+              </span>
+              <span class="legend-item">
+                <span class="legend-color changed"></span>
+                Values Changed
+              </span>
+              <span class="legend-item">
+                <span class="legend-color normal"></span>
+                No Changes
+              </span>
+            </div>
+            <span class="last-update"
+              >Comparisons: {{ comparisonHistory.length }}</span
+            >
+          </div>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Comparison</th>
+              <th>Time</th>
+              <th>Periods (Total/Content/Ad)</th>
+              <th>Number Period Added (provide Id)</th>
+              <th>Number of Period Removed</th>
+              <th>Number of Segments Removed</th>
+              <th>Number of Segments Added</th>
+              <th>Profile same in all Periods</th>
+              <th>Video and Audio Duration are Same</th>
+              <th>Start Time Correct?</th>
+              <th>Period Segment Added (Video)</th>
+              <th>Period Segment Removed (Video)</th>
+              <th>Period Segment Added (Audio)</th>
+              <th>Period Segment Removed (Audio)</th>
+              <th>Is Segment Timing Correct?</th>
+              <th>Download Time vs Segment Duration</th>
+              <th>DRM Protection Status</th>
+              <th>DRM Signaling</th>
+              <th>Period Start Time Comparison</th>
+              <th>Segments Same Across All Profiles</th>
+              <th>Period IDs Same as Previous MPD</th>
+              <th>Profile</th>
+              <th>Time Diff(s)</th>
+              <th>Switch Profile</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(historyEntry, displayIndex) in comparisonHistory
+                .slice()
+                .reverse()"
+              :key="comparisonHistory.length - 1 - displayIndex"
+              :class="{
+                'latest-row': displayIndex === 0,
+                'changed-row': hasRowChanges(
+                  historyEntry,
+                  comparisonHistory.slice().reverse()[displayIndex + 1]
+                ),
+              }"
+            >
+              <td class="metric-value comparison-cell">
+                {{ historyEntry.comparisonName }}
+              </td>
+              <td class="metric-value timestamp-cell">
+                {{ historyEntry.timestamp }}
+              </td>
+              <td class="metric-value combined-periods-cell">
+                {{ getCombinedNormalPeriods(historyEntry) }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Number Period Added (provide Id)'
+                  ),
+                ]"
+                :title="
+                  getHistoryMetricTooltip(
+                    historyEntry,
+                    'Number Period Added (provide Id)'
+                  )
+                "
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number Period Added (provide Id)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number Period Added (provide Id)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Number of Period Removed'
+                  ),
+                ]"
+                :title="
+                  getHistoryMetricTooltip(
+                    historyEntry,
+                    'Number of Period Removed'
+                  )
+                "
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number of Period Removed"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number of Period Removed"
+                      )
+                }}
+              </td>
+              <td class="metric-value">
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Removed"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Removed"
+                      )
+                }}
+              </td>
+              <td class="metric-value">
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Added"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Number of Segments Added"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Profile same in all Periods'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Profile same in all Periods"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Profile same in all Periods"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Video and Audio Duration are Same'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Video and Audio Duration are Same"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Video and Audio Duration are Same"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  'start-time-cell',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Start Time Correct?'
+                  ),
+                ]"
+                :title="
+                  getHistoryMetricTooltip(historyEntry, 'Start Time Correct?')
+                "
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Start Time Correct?"
+                      )
+                    : getHistoryMetricValue(historyEntry, "Start Time Correct?")
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Video)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Video)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (Video)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (Video)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Audio)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Added (Audio)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (AUDIO)"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Segment Removed (AUDIO)"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Is Segment Timing Correct?'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Is Segment Timing Correct?"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Is Segment Timing Correct?"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Download Time vs Segment Duration'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Download Time vs Segment Duration"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Download Time vs Segment Duration"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'DRM Protection Status'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "DRM Protection Status"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "DRM Protection Status"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(historyEntry, 'DRM Signaling'),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "DRM Signaling"
+                      )
+                    : getHistoryMetricValue(historyEntry, "DRM Signaling")
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Period Start Time Comparison'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period Start Time Comparison"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period Start Time Comparison"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Segments Same Across All Profiles'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Segments Same Across All Profiles"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Segments Same Across All Profiles"
+                      )
+                }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                  getHistoryMetricStatusClass(
+                    historyEntry,
+                    'Period IDs Same as Previous MPD'
+                  ),
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Period IDs Same as Previous MPD"
+                      )
+                    : getHistoryMetricValue(
+                        historyEntry,
+                        "Period IDs Same as Previous MPD"
+                      )
+                }}
+              </td>
+              <td class="metric-value">
+                {{ getHistoryMetricValue(historyEntry, "Profile") }}
+              </td>
+              <td
+                :class="[
+                  'metric-value',
+                  { 'detailed-content': isDetailedView },
+                ]"
+              >
+                {{
+                  isDetailedView
+                    ? getDetailedHistoryMetricValue(
+                        historyEntry,
+                        "Time Diff(s)"
+                      )
+                    : getHistoryMetricValue(historyEntry, "Time Diff(s)")
+                }}
+              </td>
+              <td class="metric-value">
+                {{ getHistoryMetricValue(historyEntry, "Switch Profile") }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -370,6 +864,36 @@ export default {
 
       // Services
       fileSystemService: new FileSystemService(),
+
+      // Comparison history and view mode (same as SingleComparison)
+      comparisonHistory: [],
+      isDetailedView: false,
+
+      // Comparison metrics list (same as SingleComparison)
+      comparisonMetrics: [
+        "Periods (Total/Content/Ad)",
+        "Number Period Added (provide Id)",
+        "Number of Period Removed",
+        "Number of Segments Removed",
+        "Number of Segments Added",
+        "Profile same in all Periods",
+        "Video and Audio Duration are Same",
+        "Start Time Correct?",
+        "Period Segment Added (Video)",
+        "Period Segment Removed (Video)",
+        "Period Segment Added (Audio)",
+        "Period Segment Removed (AUDIO)",
+        "Is Segment Timing Correct?",
+        "Download Time vs Segment Duration",
+        "DRM Protection Status",
+        "DRM Signaling",
+        "Period Start Time Comparison",
+        "Segments Same Across All Profiles",
+        "Period IDs Same as Previous MPD",
+        "Profile",
+        "Time Diff(s)",
+        "Switch Profile",
+      ],
     };
   },
 
@@ -1310,17 +1834,13 @@ export default {
           : "status-error-red",
       });
 
-      // 17. DRM Protection Status
-      const drmValidation = this.validateDRMPresence(currentPeriods);
+      // 18. DRM Signaling (using same logic as SingleComparison)
+      const drmSignaling = await this.validateDRMSignaling();
       analysis.push({
-        metric: "DRM Protection Status",
-        value: drmValidation.hasDRM
-          ? `Protected (${drmValidation.drmSystems.length} system${
-              drmValidation.drmSystems.length > 1 ? "s" : ""
-            })`
-          : "No DRM Protection Found",
-        status: drmValidation.hasDRM ? "PROTECTED" : "UNPROTECTED",
-        statusClass: drmValidation.hasDRM ? "status-ok" : "status-warning",
+        metric: "DRM Signaling",
+        value: drmSignaling.summary,
+        status: drmSignaling.status,
+        statusClass: drmSignaling.statusClass,
       });
 
       // 18. Period Start Time Comparison
@@ -1800,6 +2320,629 @@ export default {
       if (mimeType.includes("text") || mimeType.includes("application"))
         return "text";
       return "unknown";
+    },
+
+    // ===== DRM SIGNALING METHODS (from SingleComparison) =====
+
+    // Validate DRM signaling between two manifests
+    async validateDRMSignaling() {
+      try {
+        // Extract current DRM signaling info
+        const currentDrmInfo = this.extractDRMSignalingInfo(
+          this.currentManifest
+        );
+
+        // If there's no previous manifest, just show current DRM status
+        if (!this.previousManifest) {
+          return {
+            summary: currentDrmInfo.hasDRM
+              ? `DRM Present: ${currentDrmInfo.summary}`
+              : "No DRM",
+            status: currentDrmInfo.hasDRM ? "PROTECTED" : "UNPROTECTED",
+            statusClass: currentDrmInfo.hasDRM ? "status-ok" : "status-warning",
+            changed: false,
+            details: currentDrmInfo.details,
+          };
+        }
+
+        // Extract previous DRM signaling info
+        const previousDrmInfo = this.extractDRMSignalingInfo(
+          this.previousManifest
+        );
+
+        // Compare DRM signaling
+        const comparison = this.compareDRMSignaling(
+          previousDrmInfo,
+          currentDrmInfo
+        );
+
+        return comparison;
+      } catch (error) {
+        console.error("DRM signaling validation failed:", error);
+        return {
+          summary: "DRM validation failed",
+          status: "ERROR",
+          statusClass: "status-error",
+          changed: false,
+          details: `DRM signaling validation failed: ${error.message}`,
+        };
+      }
+    },
+
+    // PRODUCTION-GRADE: Extract DRM signaling with proper DASH inheritance resolution
+    extractDRMSignalingInfo(manifest) {
+      const drmInfo = {
+        hasDRM: false,
+        effectiveDrmSystems: new Set(), // Deduplicated effective DRM systems
+        cencSystems: [],
+        otherSystems: [],
+        summary: "",
+        details: "",
+      };
+
+      if (!manifest) {
+        return drmInfo;
+      }
+
+      try {
+        console.log("=== EXTRACTING DRM WITH DASH INHERITANCE RESOLUTION ===");
+
+        // STEP 1: Extract MPD-level ContentProtection (inherited by all)
+        const mpdContentProtections = this.extractContentProtectionElements(
+          manifest.querySelector("MPD")
+        );
+        console.log(
+          `MPD-level ContentProtection: ${mpdContentProtections.length}`
+        );
+
+        // STEP 2: Process each Period → AdaptationSet to resolve effective DRM
+        const periods = Array.from(manifest.querySelectorAll("Period"));
+        const adaptationSetDrmMap = new Map(); // Track effective DRM per AdaptationSet
+
+        periods.forEach((period, periodIndex) => {
+          const periodId = period.getAttribute("id") || `period_${periodIndex}`;
+
+          // Extract Period-level ContentProtection
+          const periodContentProtections =
+            this.extractContentProtectionElements(period);
+          console.log(
+            `Period ${periodId} ContentProtection: ${periodContentProtections.length}`
+          );
+
+          // Process each AdaptationSet in this Period
+          const adaptationSets = Array.from(
+            period.querySelectorAll("AdaptationSet")
+          );
+          adaptationSets.forEach((adaptationSet, asIndex) => {
+            const contentType =
+              adaptationSet.getAttribute("contentType") || "unknown";
+            const asKey = `${periodId}.AS${asIndex}(${contentType})`;
+
+            // STEP 3: Resolve effective DRM for this AdaptationSet using DASH inheritance
+            const effectiveDrm = this.resolveEffectiveDRM(
+              mpdContentProtections,
+              periodContentProtections,
+              adaptationSet
+            );
+
+            if (effectiveDrm.length > 0) {
+              adaptationSetDrmMap.set(asKey, effectiveDrm);
+              console.log(
+                `${asKey} effective DRM:`,
+                effectiveDrm.map((d) => `${d.schemeIdUri}(${d.value})`)
+              );
+            }
+          });
+        });
+
+        // STEP 4: Semantic deduplication - collapse identical DRM systems
+        const uniqueDrmSystems =
+          this.deduplicateDRMSystems(adaptationSetDrmMap);
+        console.log(
+          "Unique DRM systems after deduplication:",
+          uniqueDrmSystems
+        );
+
+        // STEP 5: Classify and process deduplicated systems
+        uniqueDrmSystems.forEach((drmSystem) => {
+          const { schemeIdUri, value, defaultKID, locations } = drmSystem;
+
+          // Add to effective DRM systems set for comparison
+          const systemKey = `${schemeIdUri}:${value}:${defaultKID || "none"}`;
+          drmInfo.effectiveDrmSystems.add(systemKey);
+          drmInfo.hasDRM = true;
+
+          if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+            // CENC system
+            drmInfo.cencSystems.push({
+              value: value,
+              defaultKID: defaultKID,
+              locations: locations, // Array of where this system is effective
+            });
+          } else if (
+            // ✅ FIX: More precise DRM system classification
+            schemeIdUri.includes("widevine") ||
+            schemeIdUri.includes("playready") ||
+            schemeIdUri.includes("fairplay") ||
+            schemeIdUri.includes("clearkey") ||
+            schemeIdUri.includes("protection") ||
+            schemeIdUri.startsWith("urn:uuid:") // UUID-based DRM schemes
+          ) {
+            // Other recognized DRM systems
+            drmInfo.otherSystems.push({
+              schemeIdUri: schemeIdUri,
+              value: value,
+              locations: locations,
+            });
+          }
+        });
+
+        // STEP 6: Generate summary and details
+        this.generateDRMSummaryAndDetails(drmInfo);
+
+        console.log("=== DRM EXTRACTION COMPLETE ===");
+        console.log(
+          `Effective DRM systems: ${drmInfo.effectiveDrmSystems.size}`
+        );
+        console.log(`CENC systems: ${drmInfo.cencSystems.length}`);
+        console.log(`Other systems: ${drmInfo.otherSystems.length}`);
+      } catch (error) {
+        console.error("Failed to extract DRM signaling info:", error);
+        drmInfo.summary = "Extraction failed";
+        drmInfo.details = `Failed to extract DRM info: ${error.message}`;
+      }
+
+      return drmInfo;
+    },
+
+    // Extract ContentProtection elements from a specific element (MPD, Period, AdaptationSet, Representation)
+    extractContentProtectionElements(element) {
+      if (!element) return [];
+
+      return Array.from(
+        element.querySelectorAll(":scope > ContentProtection")
+      ).map((cp) => {
+        const schemeIdUri = cp.getAttribute("schemeIdUri") || "";
+        const value = cp.getAttribute("value") || "";
+        const cencInfo = this.extractCENCInfo(cp);
+
+        return {
+          element: cp,
+          schemeIdUri: schemeIdUri,
+          value: value,
+          defaultKID: cencInfo ? cencInfo.defaultKID : null,
+        };
+      });
+    },
+
+    // DASH inheritance resolution: resolve effective DRM for an AdaptationSet
+    resolveEffectiveDRM(
+      mpdContentProtections,
+      periodContentProtections,
+      adaptationSet
+    ) {
+      const effectiveDrm = [];
+
+      // DASH inheritance order: MPD → Period → AdaptationSet → Representation
+      // Lower levels inherit from higher levels, but can override
+
+      // Start with MPD-level (inherited by all)
+      effectiveDrm.push(...mpdContentProtections);
+
+      // Add Period-level (inherits MPD, adds more)
+      effectiveDrm.push(...periodContentProtections);
+
+      // Add AdaptationSet-level
+      const asContentProtections =
+        this.extractContentProtectionElements(adaptationSet);
+      effectiveDrm.push(...asContentProtections);
+
+      // ✅ FIX 2: DASH inheritance resolution - process ALL representations, not just first
+      // In real MPDs: Audio and video reps can have different DRM, some reps override KIDs
+      const representations = Array.from(
+        adaptationSet.querySelectorAll("Representation")
+      );
+      representations.forEach((representation) => {
+        const repContentProtections =
+          this.extractContentProtectionElements(representation);
+        effectiveDrm.push(...repContentProtections);
+      });
+
+      return effectiveDrm;
+    },
+
+    // Semantic deduplication: collapse multiple declarations of same DRM into single effective system
+    deduplicateDRMSystems(adaptationSetDrmMap) {
+      const systemMap = new Map(); // Key: schemeIdUri:value:defaultKID, Value: system info
+
+      adaptationSetDrmMap.forEach((drmSystems, asKey) => {
+        drmSystems.forEach((drmSystem) => {
+          const { schemeIdUri, value, defaultKID } = drmSystem;
+          const systemKey = `${schemeIdUri}:${value}:${defaultKID || "none"}`;
+
+          if (systemMap.has(systemKey)) {
+            // Add this AdaptationSet to existing system's locations
+            systemMap.get(systemKey).locations.push(asKey);
+          } else {
+            // New unique system
+            systemMap.set(systemKey, {
+              schemeIdUri: schemeIdUri,
+              value: value,
+              defaultKID: defaultKID,
+              locations: [asKey], // Track where this system is effective
+            });
+          }
+        });
+      });
+
+      return Array.from(systemMap.values());
+    },
+
+    // Generate summary and details for DRM info
+    generateDRMSummaryAndDetails(drmInfo) {
+      if (drmInfo.hasDRM) {
+        const summaryParts = [];
+
+        if (drmInfo.cencSystems.length > 0) {
+          const cencSummary = drmInfo.cencSystems
+            .map((c) => {
+              const kidSuffix = c.defaultKID
+                ? `:${c.defaultKID.substring(0, 8)}...`
+                : "";
+              const locationCount = c.locations.length;
+              return `CENC(${c.value}${kidSuffix})×${locationCount}`;
+            })
+            .join(", ");
+          summaryParts.push(cencSummary);
+        }
+
+        if (drmInfo.otherSystems.length > 0) {
+          const otherSummary = drmInfo.otherSystems
+            .map((o) => {
+              const locationCount = o.locations.length;
+              return `${o.schemeIdUri.split(":").pop()}×${locationCount}`;
+            })
+            .join(", ");
+          summaryParts.push(otherSummary);
+        }
+
+        drmInfo.summary = summaryParts.join(", ");
+
+        // Detailed breakdown
+        const detailParts = [];
+
+        drmInfo.cencSystems.forEach((cenc) => {
+          detailParts.push(`CENC System:`);
+          detailParts.push(`  - Value: ${cenc.value}`);
+          detailParts.push(
+            `  - Default KID: ${cenc.defaultKID || "not specified"}`
+          );
+          detailParts.push(`  - Effective on: ${cenc.locations.join(", ")}`);
+        });
+
+        drmInfo.otherSystems.forEach((other) => {
+          detailParts.push(`Other DRM System:`);
+          detailParts.push(`  - Scheme: ${other.schemeIdUri}`);
+          detailParts.push(`  - Value: ${other.value || "not specified"}`);
+          detailParts.push(`  - Effective on: ${other.locations.join(", ")}`);
+        });
+
+        drmInfo.details = detailParts.join("\n");
+      } else {
+        drmInfo.summary = "No DRM";
+        drmInfo.details = "No ContentProtection elements found";
+      }
+    },
+
+    // PRODUCTION-GRADE: Extract CENC information with proper normalization
+    extractCENCInfo(contentProtectionElement) {
+      try {
+        const value = contentProtectionElement.getAttribute("value") || "";
+
+        // Extract default_KID - handle multiple possible attribute names and namespaces
+        let defaultKID = null;
+
+        // Try different possible attribute names (namespace-agnostic)
+        const possibleKIDAttributes = [
+          "cenc:default_KID",
+          "default_KID",
+          "defaultKID",
+          "cenc:defaultKID",
+        ];
+
+        for (const attrName of possibleKIDAttributes) {
+          const kidValue = contentProtectionElement.getAttribute(attrName);
+          if (kidValue) {
+            // ✅ FIX 1: Complete default_KID normalization with brace stripping
+            defaultKID = kidValue
+              .toLowerCase()
+              .replace(/[{}]/g, "") // Strip braces: {ca2428ae-8f61-4bcd-b717-2ae6faf8b11d}
+              .trim();
+            break;
+          }
+        }
+
+        // Also check for KID in child elements
+        if (!defaultKID) {
+          const kidElements = contentProtectionElement.querySelectorAll("*");
+          for (const elem of kidElements) {
+            if (
+              elem.textContent &&
+              elem.textContent.match(/^[{]?[0-9a-f-]{36}[}]?$/i)
+            ) {
+              // ✅ FIX 1: Complete default_KID normalization with brace stripping
+              defaultKID = elem.textContent
+                .toLowerCase()
+                .replace(/[{}]/g, "") // Strip braces
+                .trim();
+              break;
+            }
+          }
+        }
+
+        return {
+          value: value,
+          defaultKID: defaultKID,
+        };
+      } catch (error) {
+        console.error("Failed to extract CENC info:", error);
+        return null;
+      }
+    },
+
+    // PRODUCTION-GRADE: Semantic comparison of DRM signaling with set-based comparison
+    compareDRMSignaling(previousDrmInfo, currentDrmInfo) {
+      const comparison = {
+        summary: "",
+        status: "OK",
+        statusClass: "status-ok",
+        changed: false,
+        details: "",
+      };
+
+      const changes = [];
+      const details = [];
+
+      try {
+        // Check for DRM presence changes
+        if (!previousDrmInfo.hasDRM && currentDrmInfo.hasDRM) {
+          comparison.changed = true;
+          comparison.status = "DRM_ADDED";
+          comparison.statusClass = "status-warning";
+          changes.push("DRM protection added");
+          details.push(`DRM Added: ${currentDrmInfo.summary}`);
+        } else if (previousDrmInfo.hasDRM && !currentDrmInfo.hasDRM) {
+          comparison.changed = true;
+          comparison.status = "DRM_REMOVED";
+          comparison.statusClass = "status-error-red";
+          changes.push("DRM protection removed");
+          details.push(
+            "CRITICAL: DRM protection removed - stream now unprotected"
+          );
+        } else if (!previousDrmInfo.hasDRM && !currentDrmInfo.hasDRM) {
+          comparison.summary = "No DRM (unchanged)";
+          details.push("No DRM protection in either manifest");
+          return comparison;
+        }
+
+        // ✅ FIX 3 & 4: Correct key rotation detection and value change detection
+        const prevSystems = previousDrmInfo.effectiveDrmSystems || new Set();
+        const currSystems = currentDrmInfo.effectiveDrmSystems || new Set();
+
+        // Group systems by scheme+value to detect key rotation and value changes
+        const prevBySchemeValue = this.groupSystemsBySchemeValue(prevSystems);
+        const currBySchemeValue = this.groupSystemsBySchemeValue(currSystems);
+
+        // Detect key rotation: Same scheme+value, different KID
+        const keyRotations = this.detectKeyRotation(
+          prevBySchemeValue,
+          currBySchemeValue
+        );
+
+        // Detect critical value changes: cenc ↔ cbcs
+        const valueChanges = this.detectCriticalValueChanges(
+          prevSystems,
+          currSystems
+        );
+
+        // Find added and removed systems
+        const addedSystems = new Set(
+          [...currSystems].filter((s) => !prevSystems.has(s))
+        );
+        const removedSystems = new Set(
+          [...prevSystems].filter((s) => !currSystems.has(s))
+        );
+
+        // Process changes in order of severity
+        if (removedSystems.size > 0) {
+          comparison.changed = true;
+          comparison.status = "DRM_REMOVED";
+          comparison.statusClass = "status-error-red";
+          changes.push(`${removedSystems.size} DRM system(s) removed`);
+
+          removedSystems.forEach((system) => {
+            const [schemeIdUri, value, defaultKID] = system.split(":");
+            if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+              details.push(
+                `Removed CENC: value=${value}, KID=${
+                  defaultKID === "none" ? "none" : defaultKID
+                }`
+              );
+            } else {
+              details.push(`Removed DRM: ${schemeIdUri}, value=${value}`);
+            }
+          });
+        }
+
+        // ✅ FIX 3: Correct key rotation detection - only when same scheme+value, different KID
+        if (keyRotations.length > 0) {
+          comparison.changed = true;
+          comparison.status = "KEY_ROTATION";
+          comparison.statusClass = "status-error-red";
+          changes.push("CENC key rotation detected");
+
+          keyRotations.forEach((rotation) => {
+            details.push(
+              `Key rotation: ${rotation.scheme}(${rotation.value}) - KID changed from ${rotation.oldKID} to ${rotation.newKID}`
+            );
+          });
+        }
+
+        // ✅ FIX 4: Critical value changes (cenc ↔ cbcs)
+        if (valueChanges.length > 0) {
+          comparison.changed = true;
+          comparison.status = "CRITICAL_VALUE_CHANGE";
+          comparison.statusClass = "status-error-red";
+          changes.push("Critical CENC value change");
+
+          valueChanges.forEach((change) => {
+            details.push(
+              `⚠️ CRITICAL: ${change.scheme} value changed from ${change.oldValue} to ${change.newValue} - breaks playback compatibility`
+            );
+          });
+        }
+
+        // Process added systems (but don't incorrectly classify as key rotation)
+        if (addedSystems.size > 0) {
+          comparison.changed = true;
+          if (comparison.status === "OK") {
+            comparison.status = "DRM_ADDED";
+            comparison.statusClass = "status-warning";
+          }
+          changes.push(`${addedSystems.size} DRM system(s) added`);
+
+          addedSystems.forEach((system) => {
+            const [schemeIdUri, value, defaultKID] = system.split(":");
+            if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+              details.push(
+                `Added CENC: value=${value}, KID=${
+                  defaultKID === "none" ? "none" : defaultKID
+                }`
+              );
+            } else {
+              details.push(`Added DRM: ${schemeIdUri}, value=${value}`);
+            }
+          });
+        }
+
+        // Generate final summary
+        if (comparison.changed) {
+          comparison.summary = changes.join(", ");
+        } else {
+          comparison.summary = `Unchanged: ${currentDrmInfo.summary}`;
+        }
+
+        comparison.details = details.join("\n");
+      } catch (error) {
+        console.error("DRM signaling comparison failed:", error);
+        comparison.summary = "Comparison failed";
+        comparison.status = "ERROR";
+        comparison.statusClass = "status-error";
+        comparison.details = `Comparison failed: ${error.message}`;
+      }
+
+      return comparison;
+    },
+
+    // Helper: Group DRM systems by scheme+value for key rotation detection
+    groupSystemsBySchemeValue(systems) {
+      const grouped = new Map();
+
+      systems.forEach((system) => {
+        const [schemeIdUri, value, defaultKID] = system.split(":");
+        const key = `${schemeIdUri}:${value}`;
+
+        if (!grouped.has(key)) {
+          grouped.set(key, []);
+        }
+        grouped.get(key).push(defaultKID);
+      });
+
+      return grouped;
+    },
+
+    // Helper: Detect key rotation (same scheme+value, different KID)
+    detectKeyRotation(prevBySchemeValue, currBySchemeValue) {
+      const rotations = [];
+
+      // Check each scheme+value combination
+      for (const [key, prevKIDs] of prevBySchemeValue) {
+        const currKIDs = currBySchemeValue.get(key);
+        if (currKIDs) {
+          const [schemeIdUri, value] = key.split(":");
+
+          // Only check CENC systems for key rotation
+          if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+            // Check if KIDs changed for this scheme+value
+            const prevKIDSet = new Set(prevKIDs);
+            const currKIDSet = new Set(currKIDs);
+
+            const addedKIDs = [...currKIDSet].filter(
+              (kid) => !prevKIDSet.has(kid)
+            );
+            const removedKIDs = [...prevKIDSet].filter(
+              (kid) => !currKIDSet.has(kid)
+            );
+
+            if (addedKIDs.length > 0 || removedKIDs.length > 0) {
+              rotations.push({
+                scheme: schemeIdUri,
+                value: value,
+                oldKID: removedKIDs.join(", ") || "none",
+                newKID: addedKIDs.join(", ") || "none",
+              });
+            }
+          }
+        }
+      }
+
+      return rotations;
+    },
+
+    // Helper: Detect critical value changes (cenc ↔ cbcs)
+    detectCriticalValueChanges(prevSystems, currSystems) {
+      const changes = [];
+
+      // Group by scheme to detect value changes
+      const prevSchemes = new Map();
+      const currSchemes = new Map();
+
+      // Parse previous systems
+      prevSystems.forEach((system) => {
+        const [schemeIdUri, value] = system.split(":");
+        if (!prevSchemes.has(schemeIdUri)) {
+          prevSchemes.set(schemeIdUri, new Set());
+        }
+        prevSchemes.get(schemeIdUri).add(value);
+      });
+
+      currSystems.forEach((system) => {
+        const [schemeIdUri, value] = system.split(":");
+        if (!currSchemes.has(schemeIdUri)) {
+          currSchemes.set(schemeIdUri, new Set());
+        }
+        currSchemes.get(schemeIdUri).add(value);
+      });
+
+      // Check for critical value changes in CENC
+      const cencScheme = "urn:mpeg:dash:mp4protection:2011";
+      const prevCencValues = prevSchemes.get(cencScheme) || new Set();
+      const currCencValues = currSchemes.get(cencScheme) || new Set();
+
+      // Detect cenc ↔ cbcs changes (critical for playback)
+      const hasCriticalChange =
+        (prevCencValues.has("cenc") && currCencValues.has("cbcs")) ||
+        (prevCencValues.has("cbcs") && currCencValues.has("cenc"));
+
+      if (hasCriticalChange) {
+        changes.push({
+          scheme: cencScheme,
+          oldValue: [...prevCencValues].join(", "),
+          newValue: [...currCencValues].join(", "),
+        });
+      }
+
+      return changes;
     },
   },
 };

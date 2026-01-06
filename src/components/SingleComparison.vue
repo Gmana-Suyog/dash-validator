@@ -6045,10 +6045,15 @@ export default {
               locations: locations, // Array of where this system is effective
             });
           } else if (
-            schemeIdUri.includes("drm") ||
-            schemeIdUri.includes("protection")
+            // ✅ FIX: More precise DRM system classification
+            schemeIdUri.includes("widevine") ||
+            schemeIdUri.includes("playready") ||
+            schemeIdUri.includes("fairplay") ||
+            schemeIdUri.includes("clearkey") ||
+            schemeIdUri.includes("protection") ||
+            schemeIdUri.startsWith("urn:uuid:") // UUID-based DRM schemes
           ) {
-            // Other DRM systems
+            // Other recognized DRM systems
             drmInfo.otherSystems.push({
               schemeIdUri: schemeIdUri,
               value: value,
@@ -6117,13 +6122,16 @@ export default {
         this.extractContentProtectionElements(adaptationSet);
       effectiveDrm.push(...asContentProtections);
 
-      // Add Representation-level (check first representation as sample)
-      const firstRepresentation = adaptationSet.querySelector("Representation");
-      if (firstRepresentation) {
+      // ✅ FIX 2: DASH inheritance resolution - process ALL representations, not just first
+      // In real MPDs: Audio and video reps can have different DRM, some reps override KIDs
+      const representations = Array.from(
+        adaptationSet.querySelectorAll("Representation")
+      );
+      representations.forEach((representation) => {
         const repContentProtections =
-          this.extractContentProtectionElements(firstRepresentation);
+          this.extractContentProtectionElements(representation);
         effectiveDrm.push(...repContentProtections);
-      }
+      });
 
       return effectiveDrm;
     },
@@ -6230,8 +6238,11 @@ export default {
         for (const attrName of possibleKIDAttributes) {
           const kidValue = contentProtectionElement.getAttribute(attrName);
           if (kidValue) {
-            // PRODUCTION-GRADE: Normalize KID to lowercase (critical for comparison)
-            defaultKID = kidValue.toLowerCase().trim();
+            // ✅ FIX 1: Complete default_KID normalization with brace stripping
+            defaultKID = kidValue
+              .toLowerCase()
+              .replace(/[{}]/g, "") // Strip braces: {ca2428ae-8f61-4bcd-b717-2ae6faf8b11d}
+              .trim();
             break;
           }
         }
@@ -6242,9 +6253,13 @@ export default {
           for (const elem of kidElements) {
             if (
               elem.textContent &&
-              elem.textContent.match(/^[0-9a-f-]{36}$/i)
+              elem.textContent.match(/^[{]?[0-9a-f-]{36}[}]?$/i)
             ) {
-              defaultKID = elem.textContent.toLowerCase().trim();
+              // ✅ FIX 1: Complete default_KID normalization with brace stripping
+              defaultKID = elem.textContent
+                .toLowerCase()
+                .replace(/[{}]/g, "") // Strip braces
+                .trim();
               break;
             }
           }
@@ -6309,9 +6324,25 @@ export default {
           return comparison;
         }
 
-        // PRODUCTION-GRADE: Set-based comparison of effective DRM systems
+        // ✅ FIX 3 & 4: Correct key rotation detection and value change detection
         const prevSystems = previousDrmInfo.effectiveDrmSystems || new Set();
         const currSystems = currentDrmInfo.effectiveDrmSystems || new Set();
+
+        // Group systems by scheme+value to detect key rotation and value changes
+        const prevBySchemeValue = this.groupSystemsBySchemeValue(prevSystems);
+        const currBySchemeValue = this.groupSystemsBySchemeValue(currSystems);
+
+        // Detect key rotation: Same scheme+value, different KID
+        const keyRotations = this.detectKeyRotation(
+          prevBySchemeValue,
+          currBySchemeValue
+        );
+
+        // Detect critical value changes: cenc ↔ cbcs
+        const valueChanges = this.detectCriticalValueChanges(
+          prevSystems,
+          currSystems
+        );
 
         // Find added and removed systems
         const addedSystems = new Set(
@@ -6321,71 +6352,76 @@ export default {
           [...prevSystems].filter((s) => !currSystems.has(s))
         );
 
-        if (addedSystems.size > 0 || removedSystems.size > 0) {
+        // Process changes in order of severity
+        if (removedSystems.size > 0) {
           comparison.changed = true;
+          comparison.status = "DRM_REMOVED";
+          comparison.statusClass = "status-error-red";
+          changes.push(`${removedSystems.size} DRM system(s) removed`);
 
-          // Process added systems
-          if (addedSystems.size > 0) {
-            changes.push(`${addedSystems.size} DRM system(s) added`);
-            addedSystems.forEach((system) => {
-              const [schemeIdUri, value, defaultKID] = system.split(":");
-              if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
-                details.push(
-                  `Added CENC: value=${value}, KID=${
-                    defaultKID === "none" ? "none" : defaultKID
-                  }`
-                );
-                if (defaultKID !== "none") {
-                  comparison.status = "KEY_ROTATION";
-                  comparison.statusClass = "status-error-red";
-                }
-              } else {
-                details.push(`Added DRM: ${schemeIdUri}, value=${value}`);
-              }
-            });
-          }
-
-          // Process removed systems
-          if (removedSystems.size > 0) {
-            changes.push(`${removedSystems.size} DRM system(s) removed`);
-            removedSystems.forEach((system) => {
-              const [schemeIdUri, value, defaultKID] = system.split(":");
-              if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
-                details.push(
-                  `Removed CENC: value=${value}, KID=${
-                    defaultKID === "none" ? "none" : defaultKID
-                  }`
-                );
-                comparison.status = "DRM_REMOVED";
-                comparison.statusClass = "status-error-red";
-              } else {
-                details.push(`Removed DRM: ${schemeIdUri}, value=${value}`);
-              }
-            });
-          }
-
-          // Determine overall severity
-          if (removedSystems.size > 0) {
-            comparison.status = "DRM_REMOVED";
-            comparison.statusClass = "status-error-red";
-          } else if (addedSystems.size > 0) {
-            // Check if any added system involves key rotation
-            const hasKeyRotation = Array.from(addedSystems).some((system) => {
-              const [schemeIdUri, , defaultKID] = system.split(":");
-              return (
-                schemeIdUri === "urn:mpeg:dash:mp4protection:2011" &&
-                defaultKID !== "none"
+          removedSystems.forEach((system) => {
+            const [schemeIdUri, value, defaultKID] = system.split(":");
+            if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+              details.push(
+                `Removed CENC: value=${value}, KID=${
+                  defaultKID === "none" ? "none" : defaultKID
+                }`
               );
-            });
-
-            if (hasKeyRotation) {
-              comparison.status = "KEY_ROTATION";
-              comparison.statusClass = "status-error-red";
             } else {
-              comparison.status = "DRM_CHANGED";
-              comparison.statusClass = "status-warning";
+              details.push(`Removed DRM: ${schemeIdUri}, value=${value}`);
             }
+          });
+        }
+
+        // ✅ FIX 3: Correct key rotation detection - only when same scheme+value, different KID
+        if (keyRotations.length > 0) {
+          comparison.changed = true;
+          comparison.status = "KEY_ROTATION";
+          comparison.statusClass = "status-error-red";
+          changes.push("CENC key rotation detected");
+
+          keyRotations.forEach((rotation) => {
+            details.push(
+              `Key rotation: ${rotation.scheme}(${rotation.value}) - KID changed from ${rotation.oldKID} to ${rotation.newKID}`
+            );
+          });
+        }
+
+        // ✅ FIX 4: Critical value changes (cenc ↔ cbcs)
+        if (valueChanges.length > 0) {
+          comparison.changed = true;
+          comparison.status = "CRITICAL_VALUE_CHANGE";
+          comparison.statusClass = "status-error-red";
+          changes.push("Critical CENC value change");
+
+          valueChanges.forEach((change) => {
+            details.push(
+              `⚠️ CRITICAL: ${change.scheme} value changed from ${change.oldValue} to ${change.newValue} - breaks playback compatibility`
+            );
+          });
+        }
+
+        // Process added systems (but don't incorrectly classify as key rotation)
+        if (addedSystems.size > 0) {
+          comparison.changed = true;
+          if (comparison.status === "OK") {
+            comparison.status = "DRM_ADDED";
+            comparison.statusClass = "status-warning";
           }
+          changes.push(`${addedSystems.size} DRM system(s) added`);
+
+          addedSystems.forEach((system) => {
+            const [schemeIdUri, value, defaultKID] = system.split(":");
+            if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+              details.push(
+                `Added CENC: value=${value}, KID=${
+                  defaultKID === "none" ? "none" : defaultKID
+                }`
+              );
+            } else {
+              details.push(`Added DRM: ${schemeIdUri}, value=${value}`);
+            }
+          });
         }
 
         // Generate final summary
@@ -6405,6 +6441,107 @@ export default {
       }
 
       return comparison;
+    },
+
+    // Helper: Group DRM systems by scheme+value for key rotation detection
+    groupSystemsBySchemeValue(systems) {
+      const grouped = new Map();
+
+      systems.forEach((system) => {
+        const [schemeIdUri, value, defaultKID] = system.split(":");
+        const key = `${schemeIdUri}:${value}`;
+
+        if (!grouped.has(key)) {
+          grouped.set(key, []);
+        }
+        grouped.get(key).push(defaultKID);
+      });
+
+      return grouped;
+    },
+
+    // Helper: Detect key rotation (same scheme+value, different KID)
+    detectKeyRotation(prevBySchemeValue, currBySchemeValue) {
+      const rotations = [];
+
+      // Check each scheme+value combination
+      for (const [key, prevKIDs] of prevBySchemeValue) {
+        const currKIDs = currBySchemeValue.get(key);
+        if (currKIDs) {
+          const [schemeIdUri, value] = key.split(":");
+
+          // Only check CENC systems for key rotation
+          if (schemeIdUri === "urn:mpeg:dash:mp4protection:2011") {
+            // Check if KIDs changed for this scheme+value
+            const prevKIDSet = new Set(prevKIDs);
+            const currKIDSet = new Set(currKIDs);
+
+            const addedKIDs = [...currKIDSet].filter(
+              (kid) => !prevKIDSet.has(kid)
+            );
+            const removedKIDs = [...prevKIDSet].filter(
+              (kid) => !currKIDSet.has(kid)
+            );
+
+            if (addedKIDs.length > 0 || removedKIDs.length > 0) {
+              rotations.push({
+                scheme: schemeIdUri,
+                value: value,
+                oldKID: removedKIDs.join(", ") || "none",
+                newKID: addedKIDs.join(", ") || "none",
+              });
+            }
+          }
+        }
+      }
+
+      return rotations;
+    },
+
+    // Helper: Detect critical value changes (cenc ↔ cbcs)
+    detectCriticalValueChanges(prevSystems, currSystems) {
+      const changes = [];
+
+      // Group by scheme to detect value changes
+      const prevSchemes = new Map();
+      const currSchemes = new Map();
+
+      // Parse previous systems
+      prevSystems.forEach((system) => {
+        const [schemeIdUri, value] = system.split(":");
+        if (!prevSchemes.has(schemeIdUri)) {
+          prevSchemes.set(schemeIdUri, new Set());
+        }
+        prevSchemes.get(schemeIdUri).add(value);
+      });
+
+      currSystems.forEach((system) => {
+        const [schemeIdUri, value] = system.split(":");
+        if (!currSchemes.has(schemeIdUri)) {
+          currSchemes.set(schemeIdUri, new Set());
+        }
+        currSchemes.get(schemeIdUri).add(value);
+      });
+
+      // Check for critical value changes in CENC
+      const cencScheme = "urn:mpeg:dash:mp4protection:2011";
+      const prevCencValues = prevSchemes.get(cencScheme) || new Set();
+      const currCencValues = currSchemes.get(cencScheme) || new Set();
+
+      // Detect cenc ↔ cbcs changes (critical for playback)
+      const hasCriticalChange =
+        (prevCencValues.has("cenc") && currCencValues.has("cbcs")) ||
+        (prevCencValues.has("cbcs") && currCencValues.has("cenc"));
+
+      if (hasCriticalChange) {
+        changes.push({
+          scheme: cencScheme,
+          oldValue: [...prevCencValues].join(", "),
+          newValue: [...currCencValues].join(", "),
+        });
+      }
+
+      return changes;
     },
 
     // CORRECT: Compare period start times using segment-derived timing
