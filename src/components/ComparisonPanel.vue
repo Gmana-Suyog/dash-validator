@@ -102,6 +102,7 @@
             <th>Source Value</th>
             <th>SSAI Value</th>
             <th>DRM Signaling</th>
+            <th>Availability Start Time</th>
             <th>How to Solve the Issue?</th>
           </tr>
         </thead>
@@ -131,6 +132,14 @@
               :class="getDrmSignalingClass()"
             >
               {{ getDrmSignalingSummary() }}
+            </td>
+            <td
+              data-label="Availability Start Time"
+              class="ast-cell"
+              :class="getAstClass()"
+              :title="getAstTooltip()"
+            >
+              {{ getAstSummary() }}
             </td>
             <td data-label="Solution" class="solution-cell">
               {{ item.solution }}
@@ -844,6 +853,78 @@ export default {
       // For now, return all periods - you can implement ad filtering logic here
       return periods;
     },
+
+    // ===== AVAILABILITY START TIME METHODS =====
+
+    // Helper: Extract availabilityStartTime from manifest
+    extractAvailabilityStartTime(manifest) {
+      if (!manifest) return null;
+      const mpd = manifest.querySelector("MPD");
+      return mpd?.getAttribute("availabilityStartTime") || null;
+    },
+
+    // Compare availabilityStartTime between Source and SSAI
+    compareAvailabilityStartTime() {
+      if (!this.sourceManifest || !this.ssaiManifest) {
+        return {
+          metric: "Availability Start Time",
+          value: "No manifests to compare",
+          status: "ERROR",
+          statusClass: "status-error",
+          hasDifference: true,
+          tooltip: "Both Source and SSAI manifests are required for comparison",
+        };
+      }
+
+      const sourceAST = this.extractAvailabilityStartTime(this.sourceManifest);
+      const ssaiAST = this.extractAvailabilityStartTime(this.ssaiManifest);
+
+      if (!sourceAST || !ssaiAST) {
+        return {
+          metric: "Availability Start Time",
+          value: "Missing",
+          status: "ERROR",
+          statusClass: "status-error",
+          hasDifference: true,
+          tooltip: `availabilityStartTime missing:\nSource: ${
+            sourceAST || "MISSING"
+          }\nSSAI: ${
+            ssaiAST || "MISSING"
+          }\n\nImpact: Missing AST can cause playback timing issues`,
+        };
+      }
+
+      const isAligned = sourceAST === ssaiAST;
+
+      return {
+        metric: "Availability Start Time",
+        value: isAligned ? "Aligned" : "Mismatch",
+        status: isAligned ? "OK" : "BLACK_ISSUE",
+        statusClass: isAligned ? "status-ok" : "status-error-red",
+        hasDifference: !isAligned,
+        tooltip: isAligned
+          ? `✅ Source and SSAI availabilityStartTime are aligned:\n${sourceAST}`
+          : `🚨 BLACK ISSUE - Live Timeline Mismatch\n\nSource AST: ${sourceAST}\nSSAI AST:   ${ssaiAST}\n\nImpact: Misaligned live timeline → player may show black screen\nCause: SSAI altered the availabilityStartTime\nSolution: SSAI must preserve original AST from Source MPD`,
+      };
+    },
+
+    // Get AST comparison summary for display
+    getAstSummary() {
+      const comparison = this.compareAvailabilityStartTime();
+      return comparison.value;
+    },
+
+    // Get AST comparison CSS class
+    getAstClass() {
+      const comparison = this.compareAvailabilityStartTime();
+      return comparison.statusClass;
+    },
+
+    // Get AST comparison tooltip
+    getAstTooltip() {
+      const comparison = this.compareAvailabilityStartTime();
+      return comparison.tooltip;
+    },
   },
 };
 </script>
@@ -1372,6 +1453,48 @@ export default {
   background: rgba(220, 38, 38, 0.1);
   color: #dc2626;
   border: 1px solid rgba(220, 38, 38, 0.2);
+}
+
+.ast-cell {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  max-width: 160px;
+  word-break: break-word;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.ast-cell.status-ok {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.ast-cell.status-error {
+  background: rgba(107, 114, 128, 0.1);
+  color: #6b7280;
+  border: 1px solid rgba(107, 114, 128, 0.2);
+}
+
+.ast-cell.status-error-red {
+  background: rgba(220, 38, 38, 0.15);
+  color: #dc2626;
+  border: 2px solid #dc2626;
+  font-weight: 700;
+  animation: pulse-red 2s infinite;
+}
+
+/* Animation for critical AST issues */
+@keyframes pulse-red {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.1);
+  }
 }
 
 .solution-cell {
